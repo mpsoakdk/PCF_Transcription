@@ -159,6 +159,54 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
     // Conversation title
     private _conversationTitle: string = "Guest Inquiry";
     
+    // Live Transcript visibility
+    private _isTranscriptVisible: boolean = false;
+    private _toggleTranscriptButton: HTMLButtonElement | null = null;
+    
+    // Toast notification container
+    private _toastContainer: HTMLDivElement | null = null;
+    
+    // Azure AI configuration
+    private _azureOpenAIEndpoint: string | null = null;
+    private _azureOpenAIKey: string | null = null;
+    private _azureOpenAIDeployment: string = "gpt-4o-mini";
+    private _conversationHistory: Array<{role: string, content: string}> = [];
+    private _systemPrompt: string = `Rolle
+Du er en AI-assistent til Munkebjerg Hotels kundeserviceteam. Du hjælper hotellets medarbejdere med at yde fremragende service ved at analysere live samtaleudskrifter og give realtidsindsigt.
+
+Konversationsformat (VIGTIGT - brug altid denne struktur):
+
+### 📋 Samtaleoversigt
+[2-3 sætninger om hvad der er diskuteret indtil nu]
+
+### 🎯 Gæstens behov
+[Hvad ønsker gæsten]
+
+### ✅ Foreslåede handlinger
+- [Konkret handling 1 - f.eks. "Bekræft værelsesnummer"]
+- [Konkret handling 2 - f.eks. "Tjek tilgængelighed i systemet"]
+- [Konkret handling 3 - f.eks. "Tilbyd opgradering"]
+
+### 💬 Hurtigt svar til gæsten
+"[Skriv et konkret svar som medarbejderen kan bruge direkte]"
+
+### ❓ Manglende information
+- [Hvad mangler vi at vide - f.eks. "Værelsesnummer"]
+- [Andet manglende - f.eks. "Ankomsttidspunkt"]
+- [Præferencer - f.eks. "Diætbehov"]
+
+### 📌 Vigtige noter
+[Special krav, loyalitetsstatus (Gold/Silver/Bronze), sentiment]
+
+Hotel kontekst: Munkebjerg Hotel - Luksushotel i Danmark med roomservice, rengøring, bookingændringer, loyalitetsprogram
+
+Regler:
+- Skriv ALTID på dansk
+- Brug strukturen ovenfor i HVER besked
+- Hold svar under 250 ord
+- Vær konkret og handlingsorienteret
+- Prioritér gæstetilfredshed`;
+    
     // Event handlers (stored for cleanup)
     private _customEventHandler: ((event: Event) => void) | null = null;
     private _postMessageHandler: ((event: MessageEvent) => void) | null = null;
@@ -407,21 +455,17 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
                 console.log(`[TranscriptViewer] 📝 New message: [${sender}] ${text}`);
                 
                 // Map sender names to our format
-                // "Customer" in transcript = Customer Service Employee (Agent/hotel staff)
-                // "Unknown" in transcript = actual Customer (the guest)
-                let speaker = "Customer"; // Default to guest
+                // Mike Poulsen / Customer Service Employee = Customer (the guest)
+                // Actual customer / Unknown / You = Agent (hotel staff)
+                let speaker = "Agent"; // Default to Agent (hotel staff)
                 const senderLower = sender.toLowerCase();
                 
-                if (senderLower.includes("customer")) {
-                    // "Customer" in the transcript = Customer Service Employee
-                    speaker = "Agent";
-                } else if (senderLower.includes("unknown")) {
-                    // "Unknown" in the transcript = actual Customer (guest)
+                if (senderLower.includes("customer") || senderLower.includes("mike") || senderLower.includes("poulsen") || senderLower.includes("bot") || senderLower.includes("cu")) {
+                    // Mike Poulsen or Customer Service Employee = Customer (the guest)
                     speaker = "Customer";
-                } else if (senderLower.includes("bot") || senderLower.includes("agent") || senderLower.includes("cu")) {
+                } else if (senderLower.includes("unknown") || senderLower.includes("you") || senderLower.includes("caller") || senderLower.includes("guest")) {
+                    // Unknown or You = Agent (hotel staff)
                     speaker = "Agent";
-                } else if (senderLower.includes("you") || senderLower.includes("caller") || senderLower.includes("guest")) {
-                    speaker = "Customer";
                 }
                 
                 // Add to transcript
@@ -494,6 +538,13 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
         };
         this.renderGuestInfo();
         
+        // Auto-configure Azure Foundry
+        this.configureAzureFoundry(
+            "https://hoterlmunkbjergdemo.cognitiveservices.azure.com",
+            "Bgrk12N01obBxT9OdDuH6vnbLFZ5EPXulvwW4XEJ80BbSY98aEyIJQQJ99BKACfhMk5XJ3w3AAAAACOGWjpS",
+            "gpt-4o-mini"
+        ).catch(err => console.error("[TranscriptViewer] Failed to configure Azure AI:", err));
+        
         if (!this._conversationId) {
             // New conversations may not have a GUID yet; operate in sessionless mode
             this._sessionlessId = `sessionless-${Date.now()}`;
@@ -516,11 +567,13 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
         const maxHeight = this._context.parameters.maxHeight.raw || 600;
         this._mainContainer.style.height = `${maxHeight}px`;
         
-        // Add conversation title header
-        const titleHeader = document.createElement("div");
-        titleHeader.className = "conversation-title-header";
-        titleHeader.innerHTML = `<h2 class="conversation-title">${this.escapeHtml(this._conversationTitle)}</h2>`;
-        this._mainContainer.appendChild(titleHeader);
+        // Add transcript-hidden class by default
+        this._mainContainer.classList.add("transcript-hidden");
+        
+        // Create toast container
+        this._toastContainer = document.createElement("div");
+        this._toastContainer.className = "toast-container";
+        this._mainContainer.appendChild(this._toastContainer);
         
         // === COLUMN 1: Transcript History ===
         this.createTranscriptColumn();
@@ -541,12 +594,13 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
     private createTranscriptColumn(): void {
         this._transcriptContainer = document.createElement("div");
         this._transcriptContainer.className = "transcript-column";
+        this._transcriptContainer.style.display = "none"; // Hidden by default
         
         // Header
         this._headerElement = document.createElement("div");
         this._headerElement.className = "column-header";
         this._headerElement.innerHTML = `
-            <span class="header-title">🎧 Live Transcript</span>
+            <span class="header-title">📝 Live Transskript</span>
         `;
         this._transcriptContainer.appendChild(this._headerElement);
         
@@ -572,10 +626,28 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
         this._aiChatContainer = document.createElement("div");
         this._aiChatContainer.className = "ai-chat-column";
         
-        // Header
+        // Header with toggle button
         const header = document.createElement("div");
         header.className = "column-header";
-        header.innerHTML = `<span class="header-title">🤖 AI Assistant</span>`;
+        header.style.display = "flex";
+        header.style.justifyContent = "space-between";
+        header.style.alignItems = "center";
+        
+        const title = document.createElement("span");
+        title.className = "header-title";
+        title.textContent = "🤖 AI Assistent";
+        header.appendChild(title);
+        
+        // Add toggle transcript button
+        this._toggleTranscriptButton = document.createElement("button");
+        this._toggleTranscriptButton.className = "toggle-transcript-btn";
+        this._toggleTranscriptButton.textContent = "Vis Transskript";
+        this._toggleTranscriptButton.style.fontSize = "12px";
+        this._toggleTranscriptButton.style.padding = "4px 12px";
+        this._toggleTranscriptButton.style.marginLeft = "auto";
+        this._toggleTranscriptButton.addEventListener("click", () => this.toggleTranscriptVisibility());
+        header.appendChild(this._toggleTranscriptButton);
+        
         this._aiChatContainer.appendChild(header);
         
         // Chat messages area
@@ -593,7 +665,7 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
         this._aiChatInput = document.createElement("input");
         this._aiChatInput.type = "text";
         this._aiChatInput.className = "ai-chat-input";
-        this._aiChatInput.placeholder = "Ask AI about the conversation...";
+        this._aiChatInput.placeholder = "Stil AI et spørgsmål om samtalen...";
         this._aiChatInput.addEventListener("keypress", (e) => {
             if (e.key === "Enter" && this._aiChatInput.value.trim()) {
                 this.handleAIChatSubmit();
@@ -872,6 +944,26 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
         
         // Auto-scroll to bottom
         this.scrollToBottom();
+        
+        // Clear AI conversation and get fresh analysis on new transcript message
+        if (this._azureOpenAIEndpoint && this._transcriptUtterances.length > 0) {
+            // Clear previous AI messages
+            this._aiChatMessages = [];
+            this._conversationHistory = [];
+            this._aiChatMessagesContainer.innerHTML = "";
+            
+            // Get fresh analysis
+            const transcriptJSON = this.getTranscriptJSON();
+            const analysisPrompt = this.formatTranscriptForAgent(transcriptJSON);
+            this.sendToAzureOpenAI(analysisPrompt).then(response => {
+                if (response && response.message) {
+                    // Proactive AI insights appear automatically
+                    this.addAIMessage(response.message, "ai");
+                }
+            }).catch(err => {
+                console.error("[TranscriptViewer] Failed to send to Azure OpenAI:", err);
+            });
+        }
     }
 
     /**
@@ -937,7 +1029,7 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
     /**
      * Handle AI chat message submission
      */
-    private handleAIChatSubmit(): void {
+    private async handleAIChatSubmit(): Promise<void> {
         const message = this._aiChatInput.value.trim();
         if (!message) return;
         
@@ -947,19 +1039,20 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
         // Clear input
         this._aiChatInput.value = "";
         
-        // TODO: Replace with actual AI integration
-        // Simulate AI response
-        setTimeout(() => {
-            const responses = [
-                "I'm analyzing the conversation. This appears to be a check-in request.",
-                "Based on the transcript, the guest seems satisfied with the room.",
-                "I recommend offering room service options for this guest.",
-                "The guest mentioned early check-out tomorrow. I'll note that.",
-                "Let me help you with that. I'm a placeholder AI - replace me with real AI logic!"
-            ];
-            const randomResponse = responses[Math.floor(Math.random() * responses.length)];
-            this.addAIMessage(randomResponse, "ai");
-        }, 1000);
+        // Get current transcript context
+        const transcriptContext = this.formatTranscriptForAgent(this.getTranscriptJSON());
+        const fullMessage = `${transcriptContext}\n\nUser Question: ${message}`;
+        
+        // Send to Azure OpenAI
+        if (this._azureOpenAIEndpoint) {
+            const response = await this.sendToAzureOpenAI(fullMessage);
+            
+            if (response && response.message) {
+                this.addAIMessage(response.message, "ai");
+            }
+        } else {
+            this.addAIMessage("Azure OpenAI not configured. Please check setup.", "ai");
+        }
     }
     
     /**
@@ -976,8 +1069,58 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
         this._aiChatMessages.push(message);
         this.renderAIMessage(message);
         
-        // Auto-scroll to bottom
-        this._aiChatMessagesContainer.scrollTop = this._aiChatMessagesContainer.scrollHeight;
+        // Auto-scroll to bottom after DOM update
+        requestAnimationFrame(() => {
+            setTimeout(() => {
+                this._aiChatMessagesContainer.scrollTop = this._aiChatMessagesContainer.scrollHeight;
+            }, 100);
+        });
+    }
+    
+    /**
+     * Parse markdown formatting in AI messages
+     */
+    private parseMarkdown(text: string): string {
+        // Bold: **text** or __text__
+        text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        text = text.replace(/__(.+?)__/g, '<strong>$1</strong>');
+        
+        // Headers: ### text - just bold them, hide the ###
+        text = text.replace(/^###\s+(.+)$/gm, '<div style="margin: 12px 0 6px 0; font-weight: 600; font-size: 14px; color: var(--colorNeutralForeground1);">$1</div>');
+        text = text.replace(/^##\s+(.+)$/gm, '<div style="margin: 12px 0 6px 0; font-weight: 600; font-size: 14px; color: var(--colorNeutralForeground1);">$1</div>');
+        
+        // Bullet lists: - item or * item
+        text = text.replace(/^[\-\*]\s+(.+)$/gm, '<li style="margin-left: 20px; margin-bottom: 4px;">$1</li>');
+        
+        // Wrap consecutive <li> in <ul> - split by double newline to handle list groups
+        const lines = text.split('\n');
+        let inList = false;
+        const processed: string[] = [];
+        
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            if (line.includes('<li')) {
+                if (!inList) {
+                    processed.push('<ul style="margin: 8px 0; padding-left: 0; list-style-position: inside;">');
+                    inList = true;
+                }
+                processed.push(line);
+            } else {
+                if (inList) {
+                    processed.push('</ul>');
+                    inList = false;
+                }
+                processed.push(line);
+            }
+        }
+        if (inList) processed.push('</ul>');
+        
+        text = processed.join('\n');
+        
+        // Line breaks
+        text = text.replace(/\n/g, '<br>');
+        
+        return text;
     }
     
     /**
@@ -992,8 +1135,18 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
             minute: '2-digit'
         });
         
+        const senderLabel = message.sender === "user" ? "User" : "Agent";
+        
+        // Parse markdown for AI messages, escape HTML for user messages
+        const messageContent = message.sender === "ai" 
+            ? this.parseMarkdown(message.text)
+            : this.escapeHtml(message.text);
+        
         messageElement.innerHTML = `
-            <div class="ai-message-content">${this.escapeHtml(message.text)}</div>
+            <div class="ai-message-header">
+                <span class="ai-sender">${senderLabel}:</span>
+            </div>
+            <div class="ai-message-content">${messageContent}</div>
             <div class="ai-message-time">${timeString}</div>
         `;
         
@@ -1006,15 +1159,15 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
     private renderGuestInfo(): void {
         this._guestInfoPanel.innerHTML = `
             <div class="column-header">
-                <span class="header-title">👤 Guest Information</span>
+                <span class="header-title">👤 Gæsteinformation</span>
             </div>
             <div class="guest-info-content">
                 <div class="info-row">
-                    <span class="info-label">Name:</span>
+                    <span class="info-label">Navn:</span>
                     <span class="info-value" id="guestName">${this.escapeHtml(this._guestInfo.name)}</span>
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Room:</span>
+                    <span class="info-label">Værelse:</span>
                     <span class="info-value">${this.escapeHtml(this._guestInfo.room)}</span>
                 </div>
                 <div class="info-row">
@@ -1026,7 +1179,7 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
                     <span class="info-value">${this.escapeHtml(this._guestInfo.checkOut)}</span>
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Phone:</span>
+                    <span class="info-label">Telefon:</span>
                     <span class="info-value">${this.escapeHtml(this._guestInfo.phone)}</span>
                 </div>
                 <div class="info-row">
@@ -1034,15 +1187,15 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
                     <span class="info-value">${this.escapeHtml(this._guestInfo.email)}</span>
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Loyalty Status:</span>
+                    <span class="info-label">Loyalitetsstatus:</span>
                     <span class="info-value">${this.escapeHtml(this._guestInfo.loyalty)}</span>
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Preferences:</span>
+                    <span class="info-label">Præferencer:</span>
                     <span class="info-value">${this.escapeHtml(this._guestInfo.preferences)}</span>
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Notes:</span>
+                    <span class="info-label">Noter:</span>
                     <span class="info-value">${this.escapeHtml(this._guestInfo.notes)}</span>
                 </div>
             </div>
@@ -1056,39 +1209,57 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
         const actions: SuggestedAction[] = [
             {
                 id: "check-in",
-                title: "Check-In Guest",
-                description: "Process room check-in",
+                title: "Check-In Gæst",
+                description: "Process indcheck & værelsesnøgle",
                 icon: "🔑"
             },
             {
                 id: "check-out",
-                title: "Check-Out Guest",
-                description: "Process departure & billing",
+                title: "Check-Out Gæst",
+                description: "Process afrejse & fakturering",
                 icon: "💳"
             },
             {
                 id: "room-service",
                 title: "Room Service",
-                description: "Order food or amenities",
+                description: "Bestil mad eller service",
                 icon: "🍽️"
             },
             {
                 id: "booking-modify",
-                title: "Modify Booking",
-                description: "Change dates or room type",
+                title: "Ændre Booking",
+                description: "Ændr datoer eller værelsestype",
                 icon: "📅"
             },
             {
                 id: "housekeeping",
-                title: "Housekeeping Request",
-                description: "Schedule room cleaning",
+                title: "Rengøring",
+                description: "Book værelsesrengøring",
                 icon: "🧹"
+            },
+            {
+                id: "restaurant",
+                title: "Restaurant Booking",
+                description: "Reserver bord i restaurant",
+                icon: "🍴"
+            },
+            {
+                id: "spa",
+                title: "Spa Behandling",
+                description: "Book wellness behandling",
+                icon: "💆"
+            },
+            {
+                id: "upgrade",
+                title: "Værelses Opgradering",
+                description: "Tilbyd suite eller upgrade",
+                icon: "⬆️"
             }
         ];
         
         let actionsHTML = `
             <div class="column-header">
-                <span class="header-title">✨ Suggested Actions</span>
+                <span class="header-title">✨ Foreslåede Handlinger</span>
             </div>
             <div class="actions-content">
         `;
@@ -1126,9 +1297,20 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
         
         console.log(`[HotelReception] Action clicked: ${actionId}`);
         
-        // TODO: Replace with actual action handlers
-        // For now, just show in AI chat
-        this.addAIMessage(`Action "${actionId}" clicked. This is a placeholder - implement actual action logic here.`, "ai");
+        // Show toast notification
+        const actionTitles: { [key: string]: string } = {
+            "check-in": "Check-In Guest",
+            "check-out": "Check-Out Guest",
+            "room-service": "Room Service",
+            "booking-modify": "Modify Booking",
+            "housekeeping": "Housekeeping Request"
+        };
+        
+        const actionTitle = actionTitles[actionId] || actionId;
+        this.showToast(`Action triggered: ${actionTitle}`);
+        
+        // Add to AI chat as user action
+        this.addAIMessage(`I want to: ${actionTitle}`, "user");
     }
     
     /**
@@ -1240,6 +1422,197 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
         return {};
     }
 
+    /**
+     * Toggle Live Transcript visibility
+     */
+    private toggleTranscriptVisibility(): void {
+        this._isTranscriptVisible = !this._isTranscriptVisible;
+        
+        if (this._isTranscriptVisible) {
+            // Show transcript - 3 column layout
+            this._transcriptContainer.style.display = "flex";
+            this._mainContainer.classList.remove("transcript-hidden");
+            if (this._toggleTranscriptButton) {
+                this._toggleTranscriptButton.textContent = "Skjul Transskript";
+                this._toggleTranscriptButton.classList.add("active");
+            }
+        } else {
+            // Hide transcript - 2 column layout
+            this._transcriptContainer.style.display = "none";
+            this._mainContainer.classList.add("transcript-hidden");
+            if (this._toggleTranscriptButton) {
+                this._toggleTranscriptButton.textContent = "Vis Transskript";
+                this._toggleTranscriptButton.classList.remove("active");
+            }
+        }
+    }
+    
+    /**
+     * Show toast notification
+     */
+    private showToast(message: string, duration: number = 3000): void {
+        if (!this._toastContainer) return;
+        
+        const toast = document.createElement("div");
+        toast.className = "toast";
+        toast.textContent = message;
+        
+        this._toastContainer.appendChild(toast);
+        
+        // Trigger animation
+        setTimeout(() => toast.classList.add("show"), 10);
+        
+        // Remove after duration
+        setTimeout(() => {
+            toast.classList.remove("show");
+            setTimeout(() => toast.remove(), 300);
+        }, duration);
+    }
+    
+    /**
+     * Get transcript as JSON for Azure Foundry
+     */
+    private getTranscriptJSON(): any {
+        return {
+            Subject: this._conversationTitle,
+            Transcript: {
+                Messages: this._transcriptUtterances.map(u => ({
+                    Caller: u.speaker,
+                    Message: u.text,
+                    Timestamp: u.timestamp.toISOString()
+                }))
+            },
+            AIAssistant: this._aiChatMessages.map(m => ({
+                Sender: m.sender === "user" ? "User" : "Agent",
+                Message: m.text,
+                Timestamp: m.timestamp.toISOString()
+            }))
+        };
+    }
+    
+    /**
+     * Send message to Azure OpenAI Chat Completions
+     */
+    private async sendToAzureOpenAI(userMessage: string): Promise<any> {
+        if (!this._azureOpenAIEndpoint || !this._azureOpenAIKey) {
+            console.warn("[TranscriptViewer] Azure OpenAI not configured");
+            this.addAIMessage("Azure AI not configured.", "ai");
+            return null;
+        }
+        
+        try {
+            console.log("[TranscriptViewer] Sending to Azure OpenAI:", userMessage);
+            
+            // Add user message to history
+            this._conversationHistory.push({
+                role: "user",
+                content: userMessage
+            });
+            
+            // Build messages array with system prompt
+            const messages = [
+                { role: "system", content: this._systemPrompt },
+                ...this._conversationHistory
+            ];
+            
+            const url = `${this._azureOpenAIEndpoint}/openai/deployments/${this._azureOpenAIDeployment}/chat/completions?api-version=2025-01-01-preview`;
+            
+            const response = await fetch(url, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "api-key": this._azureOpenAIKey
+                },
+                body: JSON.stringify({
+                    messages: messages,
+                    max_tokens: 800,
+                    temperature: 0.7,
+                    top_p: 1
+                })
+            });
+            
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Azure OpenAI API error: ${response.status} ${errorText}`);
+            }
+            
+            const result = await response.json();
+            console.log("[TranscriptViewer] Azure OpenAI response:", result);
+            
+            if (result.choices && result.choices.length > 0) {
+                const assistantMessage = result.choices[0].message.content;
+                
+                // Add assistant response to history
+                this._conversationHistory.push({
+                    role: "assistant",
+                    content: assistantMessage
+                });
+                
+                // Keep history manageable (last 10 exchanges)
+                if (this._conversationHistory.length > 20) {
+                    this._conversationHistory = this._conversationHistory.slice(-20);
+                }
+                
+                return { message: assistantMessage };
+            }
+            
+            return { message: "No response from AI" };
+        } catch (error: any) {
+            console.error("[TranscriptViewer] Error calling Azure OpenAI:", error);
+            const errorMsg = error.message || error.toString();
+            this.addAIMessage(`Error: ${errorMsg.includes('401') ? 'Authentication failed - check API key' : errorMsg}`, "ai");
+            this.showToast("Error communicating with AI");
+            return null;
+        }
+    }
+    
+    /**
+     * Format transcript JSON for the AI agent
+     */
+    private formatTranscriptForAgent(transcriptJSON: any): string {
+        const messages = transcriptJSON.Transcript.Messages || [];
+        const aiHistory = transcriptJSON.AIAssistant || [];
+        
+        let formatted = `**Current Conversation**\n\n`;
+        
+        if (messages.length > 0) {
+            formatted += `**Transcript:**\n`;
+            messages.forEach((msg: any) => {
+                formatted += `${msg.Caller}: ${msg.Message}\n`;
+            });
+            formatted += `\n`;
+        }
+        
+        if (aiHistory.length > 0) {
+            formatted += `**Previous AI Interactions:**\n`;
+            aiHistory.forEach((msg: any) => {
+                formatted += `${msg.Sender}: ${msg.Message}\n`;
+            });
+            formatted += `\n`;
+        }
+        
+        formatted += `\nPlease analyze this conversation and provide insights, suggestions, or answer any questions.`;
+        
+        return formatted;
+    }
+    
+    /**
+     * Configure Azure OpenAI
+     */
+    public async configureAzureFoundry(endpoint: string, apiKey: string, deployment?: string): Promise<void> {
+        this._azureOpenAIEndpoint = endpoint;
+        this._azureOpenAIKey = apiKey;
+        
+        if (deployment) {
+            this._azureOpenAIDeployment = deployment;
+        }
+        
+        console.log(`[TranscriptViewer] Azure OpenAI configured: ${endpoint}`);
+        console.log(`[TranscriptViewer] Using deployment: ${this._azureOpenAIDeployment}`);
+        
+        this.showToast("AI Assistant connected");
+    }
+    
     /**
      * Cleanup when control is removed from DOM
      */

@@ -1,6 +1,6 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <manifest>
-  <control namespace="ConversationInsights" constructor="TranscriptViewer" version="1.5.0" display-name-key="Transcript Viewer" description-key="Displays live voice transcription for ongoing voice calls in Customer Service workspace" control-type="standard">
+  <control namespace="HotelReception" constructor="TranscriptViewer" version="1.5.0" display-name-key="Hotel Reception Assistant" description-key="Displays live voice transcription for ongoing voice calls in Customer Service workspace with AI assistance" control-type="standard">
     <external-service-usage enabled="false">
     </external-service-usage>
     <!-- Bind to the conversation ID (msdyn_ocsession primary key) -->

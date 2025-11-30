@@ -13,6 +13,8 @@
     "refreshTypes": "pcf-scripts refreshTypes"
   },
   "dependencies": {
+    "@azure/ai-projects": "^1.0.0-beta.1",
+    "@azure/identity": "^4.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.25.1",
