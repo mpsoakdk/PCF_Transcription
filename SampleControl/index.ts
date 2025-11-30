@@ -101,6 +101,7 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
     
     // State
     private _conversationId: string | null = null;
+    private _sessionlessId: string | null = null; // fallback when no GUID is available yet
     private _transcriptUtterances: TranscriptUtterance[] = [];
     private _isActive: boolean = false;
     private _processedArticles: Set<Element> = new Set();
@@ -297,13 +298,52 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
             
             console.log("[TranscriptViewer] 🔍 Processing article element:", article);
             
-            // Extract sender (speaker)
-            const senderElement = article.querySelector('.webchat--css-wwipp-111jw2m');
-            const sender = senderElement?.textContent?.trim() || "Unknown";
-            console.log(`[TranscriptViewer]   Sender: "${sender}"`);
+            // Extract sender (speaker) - try multiple selectors
+            let senderElement = article.querySelector('.webchat--css-wwipp-111jw2m');
+            if (!senderElement) {
+                senderElement = article.querySelector('[class*="sender"]');
+            }
+            if (!senderElement) {
+                senderElement = article.querySelector('[class*="from"]');
+            }
+            if (!senderElement) {
+                // Try to find any element that might contain sender info
+                senderElement = article.querySelector('[aria-label*="from"], [aria-label*="said"]');
+            }
+            
+            let sender = senderElement?.textContent?.trim() || "";
+            
+            // If still no sender, check aria-label on the article itself
+            if (!sender) {
+                const ariaLabel = article.getAttribute('aria-label');
+                if (ariaLabel) {
+                    // Extract sender from aria-label like "Bot CU said: message text"
+                    const match = ariaLabel.match(/^(.+?)\s+said:/i);
+                    if (match) {
+                        sender = match[1].trim();
+                    }
+                }
+            }
+            
+            // If still no sender, check data attributes
+            if (!sender) {
+                sender = article.getAttribute('data-sender') || 
+                         article.getAttribute('data-from') || 
+                         "Unknown";
+            }
+            
+            console.log(`[TranscriptViewer]   Sender found: "${sender}"`);
+            console.log(`[TranscriptViewer]   Sender element:`, senderElement);
             
             // Extract message text
-            const messageElement = article.querySelector('.webchat__render-markdown div');
+            let messageElement = article.querySelector('.webchat__render-markdown div');
+            if (!messageElement) {
+                messageElement = article.querySelector('.webchat__text-content__markdown');
+            }
+            if (!messageElement) {
+                messageElement = article.querySelector('[class*="message"], [class*="text"]');
+            }
+            
             const text = messageElement?.textContent?.trim() || "";
             console.log(`[TranscriptViewer]   Text: "${text}"`);
             
@@ -315,15 +355,20 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
                 
                 // Map sender names to our format
                 let speaker = "Unknown";
-                if (sender.toLowerCase().includes("bot") || sender.toLowerCase().includes("agent")) {
+                const senderLower = sender.toLowerCase();
+                
+                if (senderLower.includes("bot") || senderLower.includes("cu") || senderLower.includes("agent")) {
                     speaker = "Agent";
-                } else if (sender.toLowerCase().includes("you") || sender.toLowerCase().includes("customer")) {
+                } else if (senderLower.includes("you") || senderLower.includes("customer") || senderLower.includes("caller")) {
+                    speaker = "Customer";
+                } else if (sender && sender !== "Unknown") {
+                    // If we have a sender name but it doesn't match patterns, assume it's the customer
                     speaker = "Customer";
                 }
                 
                 // Add to transcript
                 this.addUtterance(speaker, text, new Date());
-                console.log(`[TranscriptViewer] ✅ Added to UI as speaker: ${speaker}`);
+                console.log(`[TranscriptViewer] ✅ Added to UI as speaker: ${speaker} (from: ${sender})`);
             } else {
                 console.log("[TranscriptViewer] ⚠️ Article has no text content, skipping");
             }
@@ -374,7 +419,14 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
         // Start iframe monitoring for live transcripts
         this.startIFrameMonitoring();
         
-        console.log("[TranscriptViewer] Initialized for conversation:", this._conversationId);
+        if (!this._conversationId) {
+            // New conversations may not have a GUID yet; operate in sessionless mode
+            this._sessionlessId = `sessionless-${Date.now()}`;
+            this.updateConnectionStatus("Listening (no conversation ID yet)");
+            console.warn("[TranscriptViewer] No conversationId provided. Running in sessionless mode:", this._sessionlessId);
+        }
+
+        console.log("[TranscriptViewer] Initialized for conversation:", this._conversationId ?? this._sessionlessId);
     }
 
     /**
@@ -465,18 +517,23 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
         }
         
         const incomingId = data.conversationId;
-        
-        // If no Conversation ID was provided, latch onto the first incoming ID
+
+        // If we have an incoming ID, adopt it; otherwise operate in sessionless mode
         if (!this._conversationId && incomingId) {
             this._conversationId = incomingId;
             console.log("[LiveTranscriptControl] Latched onto conversation ID:", incomingId);
+            this.updateConnectionStatus("Live");
+        } else if (!this._conversationId && !this._sessionlessId) {
+            this._sessionlessId = `sessionless-${Date.now()}`;
+            console.warn("[LiveTranscriptControl] No conversationId on event; using sessionless ID:", this._sessionlessId);
+            this.updateConnectionStatus("Live (no conversation ID)");
         }
-        
-        // Still enforce matching when we have one
+
+        // If both IDs exist and do not match, log but still accept to avoid blocking sessionless usage
         if (this._conversationId && incomingId && incomingId !== this._conversationId) {
-            return;
+            console.warn("[LiveTranscriptControl] Incoming event for different conversationId. Accepting because sessionless mode is allowed.", incomingId, this._conversationId);
         }
-        
+
         console.log("[TranscriptViewer] Received transcript event:", data);
         
         // Add the utterance
@@ -512,18 +569,23 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
         }
         
         const incomingId = data.conversationId;
-        
-        // If no Conversation ID was provided, latch onto the first incoming ID
+
+        // If no Conversation ID was provided, latch onto the first incoming ID or create a sessionless placeholder
         if (!this._conversationId && incomingId) {
             this._conversationId = incomingId;
             console.log("[TranscriptViewer] Latched onto conversation ID:", incomingId);
+            this.updateConnectionStatus("Live");
+        } else if (!this._conversationId && !this._sessionlessId) {
+            this._sessionlessId = `sessionless-${Date.now()}`;
+            console.warn("[TranscriptViewer] No conversationId on postMessage; using sessionless ID:", this._sessionlessId);
+            this.updateConnectionStatus("Live (no conversation ID)");
         }
-        
-        // Still enforce matching when we have one
+
+        // If both IDs exist and do not match, do not block; just log for awareness
         if (this._conversationId && incomingId && incomingId !== this._conversationId) {
-            return;
+            console.warn("[TranscriptViewer] Received transcript for different conversationId. Accepting because sessionless mode is allowed.", incomingId, this._conversationId);
         }
-        
+
         console.log("[TranscriptViewer] Received postMessage transcript:", data);
         
         // Add the utterance
@@ -746,6 +808,11 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
             
             // Reset the control for the new conversation
             this._conversationId = newConversationId;
+            if (!this._conversationId) {
+                this._sessionlessId = `sessionless-${Date.now()}`;
+                this.updateConnectionStatus("Listening (no conversation ID yet)");
+                console.warn("[TranscriptViewer] Conversation cleared; using new sessionless ID:", this._sessionlessId);
+            }
             this.resetTranscript();
         }
     }

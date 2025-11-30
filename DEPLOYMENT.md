@@ -59,12 +59,46 @@ This control implements **three integration approaches**:
 
 ---
 
+## Quick Deploy Commands
+
+### Standard Build and Deploy
+```powershell
+# Navigate to project directory
+cd C:\Users\MikePoulsen\PCF_Transcript\PCF_Transcription
+
+# Build the control
+npm run build
+
+# Deploy to Dynamics 365
+pac pcf push --publisher-prefix dev
+```
+
+### Single Command Deployment
+```powershell
+npm run build; pac pcf push --publisher-prefix dev
+```
+
+**Wait for:** "Updating the control in the current org: done." before refreshing browser.
+
+### Control Details
+- **Namespace**: `dev_ConversationInsights`
+- **Control Name**: `TranscriptViewer`
+- **Full Name**: `dev_ConversationInsights.TranscriptViewer`
+- **Publisher Prefix**: `dev`
+- **Deployment Target**: https://orgc8d5d032.crm4.dynamics.com
+
+### After Deployment
+1. **Hard refresh** browser (Ctrl+Shift+R or Ctrl+F5)
+2. Check console (F12) for `[TranscriptViewer]` logs
+3. Control updates are immediate after publish
+
+---
+
 ## Build the PCF Control
 
 ### 1. Install Dependencies
 
 ```powershell
-cd C:\Users\MaleneGruber\PCF_CopilotTranscript
 npm install
 ```
 
@@ -74,54 +108,113 @@ npm install
 npm run build
 ```
 
-This will compile the TypeScript code and generate the control bundle in the `out` folder.
+This will:
+- Validate the manifest
+- Compile TypeScript
+- Bundle with Webpack
+- Generate outputs in `out/controls/`
 
-### 3. Test Locally (Optional)
-
-```powershell
-npm start watch
+### 3. Build Output
 ```
-
-This launches the test harness. Note: Live transcript events won't be available in the test harness.
+[build] Validating manifest...
+[build] Compiling and bundling control...
+[Webpack stats]:
+asset bundle.js 31.2 KiB [emitted] (name: main)
+[build] Succeeded
+```
 
 ---
 
-## Package and Deploy to Dynamics 365
+## Deploy to Dynamics 365
 
-### 1. Create Solution Package
-
-Create a new solution or add to an existing one:
-
-```powershell
-# Create a new solution folder
-pac solution init --publisher-name YourOrg --publisher-prefix yourprefix
-
-# Add the PCF control to the solution
-pac solution add-reference --path .\
-
-# Build the solution
-msbuild /t:build /restore
-```
-
-### 2. Import to Dynamics 365
-
-#### Option A: Using PAC CLI
+### Authentication
+The pac CLI should already be authenticated. If needed:
 
 ```powershell
-# Authenticate to your environment
-pac auth create --url https://yourorg.crm.dynamics.com
+# Create new auth profile
+pac auth create --url https://orgc8d5d032.crm4.dynamics.com
 
-# Push the control
-pac pcf push --publisher-prefix yourprefix
+# List auth profiles
+pac auth list
+
+# Clear all auth
+pac auth clear
 ```
 
-#### Option B: Manual Import
+### Push Control
+```powershell
+pac pcf push --publisher-prefix dev
+```
 
-1. Build the solution package (creates a .zip file)
-2. Navigate to Power Apps (make.powerapps.com)
-3. Go to **Solutions**
-4. Click **Import** and select your solution ZIP file
-5. Follow the import wizard
+This command:
+1. Connects to authenticated environment
+2. Checks if control exists
+3. Creates temporary solution wrapper
+4. Builds the control
+5. Imports solution
+6. Publishes customizations
+7. Updates the control
+
+### Deployment Output
+```
+Connected as mp@soak.dk
+Connected to... CustomerService Trial
+Using publisher prefix 'dev'.
+Checking if the control 'dev_ConversationInsights.TranscriptViewer' already exists...
+Using full update.
+Building temporary solution wrapper: done.
+Importing temporary solution wrapper: done.
+Publishing All Customizations...
+Published All Customizations.
+Updating the control in the current org: done.
+```
+
+---
+
+## Development Workflow
+
+### Iterative Changes
+1. Edit `SampleControl/index.ts`
+2. Run `npm run build`
+3. Check for TypeScript/build errors
+4. Run `pac pcf push --publisher-prefix dev`
+5. Wait for "done" message
+6. Hard refresh browser
+7. Test and check console logs
+
+### Quick Iteration
+```powershell
+npm run build; pac pcf push --publisher-prefix dev
+```
+
+---
+
+## Troubleshooting
+
+### Build Errors
+```powershell
+# Reinstall dependencies
+npm install
+
+# Clean and rebuild
+npm run build
+```
+
+### Deployment Errors
+```powershell
+# Re-authenticate
+pac auth clear
+pac auth create --url https://orgc8d5d032.crm4.dynamics.com
+
+# Try deploy again
+pac pcf push --publisher-prefix dev
+```
+
+### Control Not Updating
+1. Verify deployment completed successfully
+2. Hard refresh browser (Ctrl+Shift+R)
+3. Clear browser cache
+4. Check if control version incremented in solution
 
 ---
 
