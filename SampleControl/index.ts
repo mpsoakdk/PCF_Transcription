@@ -534,7 +534,7 @@ Regler:
         // Auto-configure Azure Foundry
         this.configureAzureFoundry(
             "https://hoterlmunkbjergdemo.cognitiveservices.azure.com",
-            "YOUR_API_KEY_HERE",
+            "Bgrk12N01obBxT9OdDuH6vnbLFZ5EPXulvwW4XEJ80BbSY98aEyIJQQJ99BKACfhMk5XJ3w3AAAAACOGWjpS",
             "gpt-4o-mini"
         ).catch(err => console.error("[TranscriptViewer] Failed to configure Azure AI:", err));
         
