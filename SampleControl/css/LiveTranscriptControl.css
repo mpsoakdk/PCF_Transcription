@@ -22,9 +22,9 @@
     justify-content: space-between;
     align-items: center;
     padding: 12px 16px;
-    background: linear-gradient(135deg, #0078d4 0%, #106ebe 100%);
+    background: linear-gradient(135deg, #6b46c1 0%, #553c9a 100%);
     color: #ffffff;
-    border-bottom: 1px solid #0063b1;
+    border-bottom: 1px solid #4c3788;
     font-weight: 600;
     font-size: 14px;
 }
@@ -101,17 +101,17 @@
     }
 }
 
-/* Agent utterances - aligned right, blue theme */
+/* Agent utterances - aligned right, purple theme */
 .transcript-utterance.agent {
-    background-color: #deecf9;
-    border-left: 4px solid #0078d4;
+    background-color: #e9d8fd;
+    border-left: 4px solid #6b46c1;
     margin-left: auto;
 }
 
-/* Customer utterances - aligned left, gray theme */
+/* Customer utterances - aligned left, teal theme */
 .transcript-utterance.customer {
-    background-color: #f3f2f1;
-    border-left: 4px solid #8a8886;
+    background-color: #d1f4f0;
+    border-left: 4px solid #0d9488;
     margin-right: auto;
 }
 
@@ -221,12 +221,12 @@
     }
     
     .transcript-utterance.agent {
-        background-color: #0f3a5f;
+        background-color: #44337a;
         color: #ffffff;
     }
     
     .transcript-utterance.customer {
-        background-color: #3b3a39;
+        background-color: #115e59;
         color: #ffffff;
     }
     

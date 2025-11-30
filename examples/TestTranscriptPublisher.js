@@ -62,12 +62,15 @@ var TestTranscriptPublisher = (function() {
             const urlId = urlParams.get('id');
             if (urlId) return urlId.replace(/[{}]/g, '');
             
-            console.error("Could not determine conversation ID. Make sure you're on a Conversation form.");
-            return null;
+            // Method 4: Generate a test ID (fallback for console testing)
+            // The PCF control now supports "latch-on-first" logic, so any ID will work
+            console.warn("Could not determine conversation ID from form. Using test ID.");
+            return 'test-conversation-' + Date.now();
             
         } catch (error) {
             console.error("Error getting conversation ID:", error);
-            return null;
+            // Return a test ID as fallback
+            return 'test-conversation-' + Date.now();
         }
     }
     
@@ -77,10 +80,6 @@ var TestTranscriptPublisher = (function() {
     function publishMessage(speaker, text, timestamp, sentiment) {
         if (!conversationId) {
             conversationId = getConversationId();
-            if (!conversationId) {
-                console.error("Cannot publish: No conversation ID");
-                return;
-            }
         }
         
         const event = new CustomEvent('omnichannelTranscriptUpdate', {
@@ -118,12 +117,8 @@ var TestTranscriptPublisher = (function() {
         
         conversationId = getConversationId();
         
-        if (!conversationId) {
-            console.error("ERROR: Could not get conversation ID. Make sure you're on a Conversation (msdyn_ocsession) form.");
-            return;
-        }
-        
         console.log("Conversation ID:", conversationId);
+        console.log("Note: The PCF control will auto-latch to this conversation ID");
         
         // Publish messages with delays
         sampleConversation.forEach(function(message) {
@@ -148,11 +143,7 @@ var TestTranscriptPublisher = (function() {
         console.log("=== Starting Continuous Stream ===");
         
         conversationId = getConversationId();
-        
-        if (!conversationId) {
-            console.error("ERROR: Could not get conversation ID.");
-            return;
-        }
+        console.log("Conversation ID:", conversationId);
         
         let messageCount = 0;
         const speakers = ['Agent', 'Customer'];

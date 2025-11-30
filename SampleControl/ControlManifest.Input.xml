@@ -1,10 +1,10 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <manifest>
-  <control namespace="OmnichannelVoice" constructor="LiveTranscriptControl" version="1.0.1" display-name-key="Live Transcript Control" description-key="Displays live voice transcription for ongoing voice calls in Customer Service workspace" control-type="standard">
+  <control namespace="ConversationInsights" constructor="TranscriptViewer" version="1.0.0" display-name-key="Transcript Viewer" description-key="Displays live voice transcription for ongoing voice calls in Customer Service workspace" control-type="standard">
     <external-service-usage enabled="false">
     </external-service-usage>
     <!-- Bind to the conversation ID (msdyn_ocsession primary key) -->
-    <property name="conversationId" display-name-key="Conversation ID" description-key="The ID of the current conversation (msdyn_ocsession)" of-type="SingleLine.Text" usage="bound" required="true" />
+    <property name="conversationId" display-name-key="Conversation ID" description-key="The ID of the current conversation (msdyn_ocsession)" of-type="SingleLine.Text" usage="bound" required="false" />
     <!-- Optional: Display configuration -->
     <property name="maxHeight" display-name-key="Max Height (px)" description-key="Maximum height of the transcript panel in pixels" of-type="Whole.None" usage="input" required="false" default-value="400" />
     <resources>

@@ -86,7 +86,7 @@ interface OmnichannelTranscriptEvent {
  * Use MutationObserver to watch the Omnichannel transcript panel DOM
  * This is fragile and not recommended for production
  */
-export class LiveTranscriptControl implements ComponentFramework.StandardControl<IInputs, IOutputs> {
+export class TranscriptViewer implements ComponentFramework.StandardControl<IInputs, IOutputs> {
     
     // Core properties
     private _context: ComponentFramework.Context<IInputs>;
@@ -103,6 +103,7 @@ export class LiveTranscriptControl implements ComponentFramework.StandardControl
     private _conversationId: string | null = null;
     private _transcriptUtterances: TranscriptUtterance[] = [];
     private _isActive: boolean = false;
+    private _processedArticles: Set<Element> = new Set();
     
     // Event handlers (stored for cleanup)
     private _customEventHandler: ((event: Event) => void) | null = null;
@@ -112,11 +113,240 @@ export class LiveTranscriptControl implements ComponentFramework.StandardControl
     private _pollingInterval: number | null = null;
     private _pollingIntervalMs: number = 5000; // 5 seconds
     
+    // MutationObserver for iframe monitoring
+    private _transcriptObserver: MutationObserver | null = null;
+    private _articleCheckInterval: number | null = null;
+    
     /**
      * Constructor
      */
     constructor() {
         // Empty constructor as per PCF standards
+    }
+    
+    /**
+     * Get the conversation iframe (#SidePanelIFrame)
+     * Returns the outer iframe that contains the Omnichannel widgets
+     */
+    private getConversationIFrame(): HTMLIFrameElement | null {
+        const iframe = document.querySelector<HTMLIFrameElement>('#SidePanelIFrame');
+        if (!iframe) {
+            console.log("[TranscriptViewer] Could not find #SidePanelIFrame");
+            return null;
+        }
+        return iframe;
+    }
+    
+    /**
+     * Get the Omnichannel iframe (nested inside conversation iframe)
+     * Returns the inner iframe that contains the webchat transcript
+     */
+    private getOmnichannelIFrame(conversationIFrame: HTMLIFrameElement): HTMLIFrameElement | null {
+        try {
+            const iframeDoc = conversationIFrame.contentDocument || conversationIFrame.contentWindow?.document;
+            if (!iframeDoc) {
+                console.log("[TranscriptViewer] Cannot access conversation iframe document");
+                return null;
+            }
+            
+            const omnichannelIframe = iframeDoc.querySelector<HTMLIFrameElement>('iframe[title="Omnichannel"]');
+            if (!omnichannelIframe) {
+                console.log("[TranscriptViewer] Could not find Omnichannel iframe");
+                return null;
+            }
+            
+            return omnichannelIframe;
+        } catch (err) {
+            console.error("[TranscriptViewer] Error accessing conversation iframe:", err);
+            return null;
+        }
+    }
+    
+    /**
+     * Search for transcript articles in the Omnichannel iframe
+     * Returns array of article elements containing webchat transcript messages
+     */
+    private searchIFrameForTranscript(omnichannelIFrame: HTMLIFrameElement): Element[] {
+        try {
+            const iframeDoc = omnichannelIFrame.contentDocument || omnichannelIFrame.contentWindow?.document;
+            if (!iframeDoc) {
+                console.log("[TranscriptViewer] Cannot access Omnichannel iframe document");
+                return [];
+            }
+            
+            const articles = iframeDoc.querySelectorAll('article.webchat__basic-transcript__activity');
+            console.log(`[TranscriptViewer] Found ${articles.length} transcript articles`);
+            
+            return Array.from(articles);
+        } catch (err) {
+            console.error("[TranscriptViewer] Error searching iframe for transcript:", err);
+            return [];
+        }
+    }
+    
+    /**
+     * Start monitoring the nested iframe for new transcript messages
+     * Uses MutationObserver to detect when new article elements are added
+     */
+    private startIFrameMonitoring(): void {
+        console.log("[TranscriptViewer] Starting iframe monitoring...");
+        
+        // Get the outer iframe
+        const conversationIFrame = this.getConversationIFrame();
+        if (!conversationIFrame) {
+            console.warn("[TranscriptViewer] Cannot start monitoring - conversation iframe not found");
+            // Retry after delay
+            setTimeout(() => this.startIFrameMonitoring(), 2000);
+            return;
+        }
+        
+        // Get the nested Omnichannel iframe
+        const omnichannelIFrame = this.getOmnichannelIFrame(conversationIFrame);
+        if (!omnichannelIFrame) {
+            console.warn("[TranscriptViewer] Cannot start monitoring - Omnichannel iframe not found");
+            // Retry after delay
+            setTimeout(() => this.startIFrameMonitoring(), 2000);
+            return;
+        }
+        
+        // Access the Omnichannel iframe's document
+        const iframeDoc = omnichannelIFrame.contentDocument || omnichannelIFrame.contentWindow?.document;
+        if (!iframeDoc) {
+            console.error("[TranscriptViewer] Cannot access Omnichannel iframe document");
+            return;
+        }
+        
+        console.log("[TranscriptViewer] ✅ Found Omnichannel iframe, starting MutationObserver");
+        
+        // Create MutationObserver to watch for new transcript articles AND changes within them
+        this._transcriptObserver = new MutationObserver((mutations) => {
+            mutations.forEach((mutation) => {
+                // Check for new article elements being added
+                mutation.addedNodes.forEach((node) => {
+                    if (node instanceof Element) {
+                        // Check if this node is an article
+                        if (node.matches('article.webchat__basic-transcript__activity')) {
+                            console.log("[TranscriptViewer] 🆕 New article element detected");
+                            this.processTranscriptArticle(node);
+                        }
+                        // Also check if article elements are being added as descendants
+                        const nestedArticles = node.querySelectorAll('article.webchat__basic-transcript__activity');
+                        nestedArticles.forEach(article => {
+                            console.log("[TranscriptViewer] 🆕 New nested article detected");
+                            this.processTranscriptArticle(article);
+                        });
+                    }
+                });
+                
+                // IMPORTANT: Also check if content is added to existing articles
+                // This handles the case where the article exists but message content is added later
+                if (mutation.target instanceof Element) {
+                    const targetArticle = mutation.target.closest('article.webchat__basic-transcript__activity');
+                    if (targetArticle && !this._processedArticles.has(targetArticle)) {
+                        // Check if this article now has content
+                        const messageElement = targetArticle.querySelector('.webchat__render-markdown div');
+                        if (messageElement && messageElement.textContent?.trim()) {
+                            console.log("[TranscriptViewer] 📝 Content added to existing article");
+                            this.processTranscriptArticle(targetArticle);
+                        }
+                    }
+                }
+            });
+        });
+        
+        // Start observing the iframe document body
+        this._transcriptObserver.observe(iframeDoc.body, {
+            childList: true,
+            subtree: true,
+            characterData: true,
+            characterDataOldValue: false
+        });
+        
+        this.updateConnectionStatus("Live (Monitoring iframe)");
+        console.log("[TranscriptViewer] 🎤 Monitoring started - watching for new transcript messages");
+        
+        // Process any existing articles
+        const existingArticles = this.searchIFrameForTranscript(omnichannelIFrame);
+        console.log(`[TranscriptViewer] Processing ${existingArticles.length} existing articles`);
+        existingArticles.forEach(article => this.processTranscriptArticle(article));
+        
+        // FALLBACK: Poll for new articles every 500ms in case MutationObserver misses them
+        // This is a safety net for virtual scrolling or dynamic rendering
+        this._articleCheckInterval = window.setInterval(() => {
+            const currentArticles = this.searchIFrameForTranscript(omnichannelIFrame);
+            currentArticles.forEach(article => {
+                if (!this._processedArticles.has(article)) {
+                    console.log("[TranscriptViewer] 🔄 Polling found unprocessed article");
+                    this.processTranscriptArticle(article);
+                }
+            });
+        }, 500);
+    }
+    
+    /**
+     * Process a transcript article element
+     * Extracts speaker and text, then adds to transcript display
+     */
+    private processTranscriptArticle(article: Element): void {
+        try {
+            // Check if we've already processed this article
+            if (this._processedArticles.has(article)) {
+                console.log("[TranscriptViewer] ⏭️ Skipping already processed article");
+                return; // Skip duplicates
+            }
+            
+            console.log("[TranscriptViewer] 🔍 Processing article element:", article);
+            
+            // Extract sender (speaker)
+            const senderElement = article.querySelector('.webchat--css-wwipp-111jw2m');
+            const sender = senderElement?.textContent?.trim() || "Unknown";
+            console.log(`[TranscriptViewer]   Sender: "${sender}"`);
+            
+            // Extract message text
+            const messageElement = article.querySelector('.webchat__render-markdown div');
+            const text = messageElement?.textContent?.trim() || "";
+            console.log(`[TranscriptViewer]   Text: "${text}"`);
+            
+            if (text) {
+                // Mark as processed
+                this._processedArticles.add(article);
+                
+                console.log(`[TranscriptViewer] 📝 New message: [${sender}] ${text}`);
+                
+                // Map sender names to our format
+                let speaker = "Unknown";
+                if (sender.toLowerCase().includes("bot") || sender.toLowerCase().includes("agent")) {
+                    speaker = "Agent";
+                } else if (sender.toLowerCase().includes("you") || sender.toLowerCase().includes("customer")) {
+                    speaker = "Customer";
+                }
+                
+                // Add to transcript
+                this.addUtterance(speaker, text, new Date());
+                console.log(`[TranscriptViewer] ✅ Added to UI as speaker: ${speaker}`);
+            } else {
+                console.log("[TranscriptViewer] ⚠️ Article has no text content, skipping");
+            }
+        } catch (err) {
+            console.error("[TranscriptViewer] Error processing transcript article:", err);
+        }
+    }
+    
+    /**
+     * Stop iframe monitoring
+     */
+    private stopIFrameMonitoring(): void {
+        if (this._transcriptObserver) {
+            this._transcriptObserver.disconnect();
+            this._transcriptObserver = null;
+            console.log("[TranscriptViewer] Iframe monitoring stopped");
+        }
+        
+        if (this._articleCheckInterval) {
+            window.clearInterval(this._articleCheckInterval);
+            this._articleCheckInterval = null;
+            console.log("[TranscriptViewer] Article polling stopped");
+        }
     }
 
     /**
@@ -141,7 +371,10 @@ export class LiveTranscriptControl implements ComponentFramework.StandardControl
         // Subscribe to transcript events
         this.subscribeToTranscriptEvents();
         
-        console.log("[LiveTranscriptControl] Initialized for conversation:", this._conversationId);
+        // Start iframe monitoring for live transcripts
+        this.startIFrameMonitoring();
+        
+        console.log("[TranscriptViewer] Initialized for conversation:", this._conversationId);
     }
 
     /**
@@ -200,7 +433,7 @@ export class LiveTranscriptControl implements ComponentFramework.StandardControl
         
         this.updateConnectionStatus("Listening for transcript events");
         
-        console.log("[LiveTranscriptControl] Subscribed to transcript events");
+        console.log("[TranscriptViewer] Subscribed to transcript events");
         console.log("Integration methods:");
         console.log("  1. Custom events: window.dispatchEvent('omnichannelTranscriptUpdate')");
         console.log("  2. PostMessage: window.postMessage({ type: 'transcriptUpdate', ... })");
@@ -227,12 +460,24 @@ export class LiveTranscriptControl implements ComponentFramework.StandardControl
         const customEvent = event as CustomEvent<OmnichannelTranscriptEvent>;
         const data = customEvent.detail;
         
-        // Validate that this event is for the current conversation
-        if (!data || data.conversationId !== this._conversationId) {
+        if (!data) {
             return;
         }
         
-        console.log("[LiveTranscriptControl] Received transcript event:", data);
+        const incomingId = data.conversationId;
+        
+        // If no Conversation ID was provided, latch onto the first incoming ID
+        if (!this._conversationId && incomingId) {
+            this._conversationId = incomingId;
+            console.log("[LiveTranscriptControl] Latched onto conversation ID:", incomingId);
+        }
+        
+        // Still enforce matching when we have one
+        if (this._conversationId && incomingId && incomingId !== this._conversationId) {
+            return;
+        }
+        
+        console.log("[TranscriptViewer] Received transcript event:", data);
         
         // Add the utterance
         this.addUtterance(
@@ -266,12 +511,20 @@ export class LiveTranscriptControl implements ComponentFramework.StandardControl
             return;
         }
         
-        // Validate that this message is for the current conversation
-        if (data.conversationId !== this._conversationId) {
+        const incomingId = data.conversationId;
+        
+        // If no Conversation ID was provided, latch onto the first incoming ID
+        if (!this._conversationId && incomingId) {
+            this._conversationId = incomingId;
+            console.log("[TranscriptViewer] Latched onto conversation ID:", incomingId);
+        }
+        
+        // Still enforce matching when we have one
+        if (this._conversationId && incomingId && incomingId !== this._conversationId) {
             return;
         }
         
-        console.log("[LiveTranscriptControl] Received postMessage transcript:", data);
+        console.log("[TranscriptViewer] Received postMessage transcript:", data);
         
         // Add the utterance
         this.addUtterance(
@@ -294,7 +547,7 @@ export class LiveTranscriptControl implements ComponentFramework.StandardControl
             return; // Already polling
         }
         
-        console.log("[LiveTranscriptControl] Starting polling (NOTE: Only retrieves post-call transcripts)");
+        console.log("[TranscriptViewer] Starting polling (NOTE: Only retrieves post-call transcripts)");
         
         // Poll immediately, then at intervals
         this.pollForTranscripts();
@@ -346,7 +599,7 @@ export class LiveTranscriptControl implements ComponentFramework.StandardControl
                 this.updateConnectionStatus("Live (Polling)");
             }
         } catch (error) {
-            console.error("[LiveTranscriptControl] Error polling for transcripts:", error);
+            console.error("[TranscriptViewer] Error polling for transcripts:", error);
             this.updateConnectionStatus("Error polling transcripts");
         }
     }
@@ -454,7 +707,7 @@ export class LiveTranscriptControl implements ComponentFramework.StandardControl
         if (this._pollingInterval !== null) {
             window.clearInterval(this._pollingInterval);
             this._pollingInterval = null;
-            console.log("[LiveTranscriptControl] Polling stopped");
+            console.log("[TranscriptViewer] Polling stopped");
         }
     }
 
@@ -477,7 +730,7 @@ export class LiveTranscriptControl implements ComponentFramework.StandardControl
         // Stop polling
         this.stopPolling();
         
-        console.log("[LiveTranscriptControl] Unsubscribed from transcript events");
+        console.log("[TranscriptViewer] Unsubscribed from transcript events");
     }
 
     /**
@@ -489,7 +742,7 @@ export class LiveTranscriptControl implements ComponentFramework.StandardControl
         // Check if conversation ID has changed
         const newConversationId = context.parameters.conversationId.raw;
         if (newConversationId !== this._conversationId) {
-            console.log("[LiveTranscriptControl] Conversation changed:", this._conversationId, "->", newConversationId);
+            console.log("[TranscriptViewer] Conversation changed:", this._conversationId, "->", newConversationId);
             
             // Reset the control for the new conversation
             this._conversationId = newConversationId;
@@ -504,6 +757,7 @@ export class LiveTranscriptControl implements ComponentFramework.StandardControl
         // Clear utterances
         this._transcriptUtterances = [];
         this._transcriptList.innerHTML = "";
+        this._processedArticles.clear();
         
         // Reset state
         this._isActive = false;
@@ -511,7 +765,7 @@ export class LiveTranscriptControl implements ComponentFramework.StandardControl
         this._statusMessage.textContent = "Waiting for live voice transcription...";
         this.updateConnectionStatus("Listening");
         
-        console.log("[LiveTranscriptControl] Transcript reset for conversation:", this._conversationId);
+        console.log("[TranscriptViewer] Transcript reset for conversation:", this._conversationId);
     }
 
     /**
@@ -528,6 +782,9 @@ export class LiveTranscriptControl implements ComponentFramework.StandardControl
         // Unsubscribe from all events
         this.unsubscribeFromTranscriptEvents();
         
-        console.log("[LiveTranscriptControl] Destroyed");
+        // Stop iframe monitoring
+        this.stopIFrameMonitoring();
+        
+        console.log("[TranscriptViewer] Destroyed");
     }
 }
