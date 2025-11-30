@@ -71,6 +71,7 @@
     font-size: var(--fontSizeBase400);
     color: var(--colorNeutralForeground1);
     box-sizing: border-box;
+    overflow: hidden; /* Prevent main container from scrolling */
 }
 
 /* Columns container */
@@ -171,34 +172,42 @@
 
 .hotel-reception-assistant {
     display: block;
+    position: relative;
+}
+
+/* Columns wrapper to handle flex properly */
+.hotel-reception-assistant > .transcript-column,
+.hotel-reception-assistant > .ai-chat-column,
+.hotel-reception-assistant > .info-column {
+    position: absolute;
+    top: var(--spacingHorizontalL);
+    bottom: var(--spacingHorizontalL);
 }
 
 .transcript-column {
-    width: 32%;
-    float: left;
-    margin-right: 2%;
+    left: var(--spacingHorizontalL);
+    width: calc(32% - var(--spacingHorizontalL));
 }
 
 .ai-chat-column {
-    width: 32%;
-    float: left;
-    margin-right: 2%;
+    left: calc(34% + var(--spacingHorizontalL));
+    width: calc(32% - var(--spacingHorizontalL) * 2);
 }
 
 .info-column {
-    width: 32%;
-    float: left;
+    right: var(--spacingHorizontalL);
+    width: calc(32% - var(--spacingHorizontalL));
 }
 
 /* 2-column layout when transcript is hidden */
 .hotel-reception-assistant.transcript-hidden .ai-chat-column {
-    width: 62%;
-    margin-right: 15px;
+    left: var(--spacingHorizontalL);
+    width: calc(62% - var(--spacingHorizontalL));
 }
 
 .hotel-reception-assistant.transcript-hidden .info-column {
-    width: calc(38% - 15px);
-    margin-left: 0;
+    right: var(--spacingHorizontalL);
+    width: calc(38% - var(--spacingHorizontalL) * 2);
 }
 
 .hotel-reception-assistant.transcript-hidden .transcript-column {
@@ -254,7 +263,7 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    min-height: calc(100% - 80px); /* Full height minus header */
+    height: 100%; /* Use full available height from parent */
 }
 
 /* Column headers - Fluent 2 Style */
@@ -269,6 +278,7 @@
     font-weight: var(--fontWeightSemibold);
     font-size: var(--fontSizeBase400);
     line-height: var(--lineHeightBase400);
+    flex-shrink: 0; /* Don't shrink header */
 }
 
 .header-title {
@@ -484,16 +494,17 @@
     display: flex;
     flex-direction: column;
     height: 100%;
+    max-height: 100%; /* Prevent overflow */
+    overflow: hidden; /* Contain all content */
 }
 
 .ai-chat-messages {
-    flex: 1;
-    overflow-y: scroll !important; /* Force scrollbar always visible */
+    flex: 1 1 auto; /* Allow to grow and shrink */
+    overflow-y: auto !important; /* Force scrollbar */
     overflow-x: hidden;
     padding: var(--spacingHorizontalL);
     background-color: var(--colorNeutralBackground2);
-    min-height: 200px; /* Ensure minimum height for scrollbar */
-    max-height: 100%;
+    min-height: 0; /* Important for flex scrolling */
     scroll-behavior: smooth;
 }
 
@@ -543,11 +554,56 @@
 .ai-message-content {
     color: var(--colorNeutralForeground2);
     font-size: var(--fontSizeBase300);
-    line-height: var(--lineHeightBase400);
+    line-height: 1.6;
     word-wrap: break-word;
     word-break: break-word;
     overflow-wrap: break-word;
     white-space: pre-wrap;
+}
+
+/* Better formatting for structured AI responses */
+.ai-message.ai .ai-message-content strong {
+    color: var(--colorNeutralForeground1);
+    font-weight: var(--fontWeightSemibold);
+}
+
+.ai-message.ai .ai-message-content ul {
+    margin: 6px 0;
+    padding-left: 0;
+}
+
+.ai-message.ai .ai-message-content li {
+    margin: 4px 0;
+    line-height: 1.5;
+}
+
+/* AI Section Headers */
+.ai-section-header {
+    margin: 14px 0 8px 0;
+    font-weight: 700;
+    font-size: 14px;
+    color: var(--colorNeutralForeground1);
+    border-bottom: 1px solid var(--colorNeutralStroke2);
+    padding-bottom: 4px;
+}
+
+/* AI Lists */
+.ai-list {
+    margin: 6px 0 8px 0;
+    padding-left: 0;
+    list-style-position: inside;
+}
+
+.ai-list li {
+    margin-left: 20px;
+    margin-bottom: 3px;
+    line-height: 1.5;
+}
+
+/* AI Quotes */
+.ai-quote {
+    color: var(--colorBrandForeground1);
+    font-style: italic;
 }
 
 .ai-message-header {
@@ -573,7 +629,10 @@
     padding: var(--spacingHorizontalL);
     background-color: var(--colorNeutralBackground1);
     border-top: 1px solid var(--colorNeutralStroke2);
-    flex-shrink: 0; /* Prevent input from shrinking */
+    flex-shrink: 0; /* Never shrink */
+    flex-grow: 0; /* Never grow */
+    position: relative;
+    z-index: 1;
 }
 
 .ai-chat-input {
@@ -627,6 +686,40 @@
 .ai-chat-send-btn:focus-visible {
     outline: 2px solid var(--colorBrandBackground);
     outline-offset: 2px;
+}
+
+/* AI Loading Indicator */
+.ai-loading-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--spacingHorizontalM);
+    padding: var(--spacingHorizontalL);
+    color: var(--colorNeutralForeground3);
+    font-size: var(--fontSizeBase300);
+    font-style: italic;
+}
+
+.loading-spinner {
+    width: 20px;
+    height: 20px;
+    border: 3px solid var(--colorNeutralStroke2);
+    border-top: 3px solid var(--colorBrandBackground);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Disable input while loading */
+.ai-chat-input:disabled {
+    background-color: var(--colorNeutralBackground3);
+    color: var(--colorNeutralForeground3);
+    cursor: not-allowed;
+    opacity: 0.6;
 }
 
 /* ============================================

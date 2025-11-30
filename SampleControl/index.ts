@@ -124,6 +124,7 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
     private _aiChatContainer: HTMLDivElement;
     private _aiChatMessagesContainer: HTMLDivElement;
     private _aiChatInput: HTMLInputElement;
+    private _aiLoadingIndicator: HTMLDivElement;
     
     // UI Elements - Info Panel (Column 3)
     private _infoPanelContainer: HTMLDivElement;
@@ -139,6 +140,7 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
     
     // AI Chat State
     private _aiChatMessages: AIChatMessage[] = [];
+    private _isLoadingAI: boolean = false;
     
     // Guest Info State (placeholder data)
     private _guestInfo = {
@@ -171,41 +173,32 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
     private _azureOpenAIKey: string | null = null;
     private _azureOpenAIDeployment: string = "gpt-4o-mini";
     private _conversationHistory: Array<{role: string, content: string}> = [];
-    private _systemPrompt: string = `Rolle
-Du er en AI-assistent til Munkebjerg Hotels kundeserviceteam. Du hjælper hotellets medarbejdere med at yde fremragende service ved at analysere live samtaleudskrifter og give realtidsindsigt.
+    private _systemPrompt: string = `Du er AI-assistent til Munkebjerg Hotels kundeserviceteam. Analyser samtaler og giv korte, handlingsorienterede svar.
 
-Konversationsformat (VIGTIGT - brug altid denne struktur):
+VIGTIGT - Brug denne SIMPLE struktur:
 
-### 📋 Samtaleoversigt
-[2-3 sætninger om hvad der er diskuteret indtil nu]
+📋 **Oversigt**
+[1-2 sætninger om samtalen]
 
-### 🎯 Gæstens behov
-[Hvad ønsker gæsten]
+🎯 **Gæstens behov**
+[Hvad ønsker gæsten - max 1 linje]
 
-### ✅ Foreslåede handlinger
-- [Konkret handling 1 - f.eks. "Bekræft værelsesnummer"]
-- [Konkret handling 2 - f.eks. "Tjek tilgængelighed i systemet"]
-- [Konkret handling 3 - f.eks. "Tilbyd opgradering"]
+✅ **Næste skridt**
+• [Handling 1]
+• [Handling 2]
+• [Handling 3]
 
-### 💬 Hurtigt svar til gæsten
-"[Skriv et konkret svar som medarbejderen kan bruge direkte]"
+💬 **Foreslået svar**
+"[Kort svar til gæsten]"
 
-### ❓ Manglende information
-- [Hvad mangler vi at vide - f.eks. "Værelsesnummer"]
-- [Andet manglende - f.eks. "Ankomsttidspunkt"]
-- [Præferencer - f.eks. "Diætbehov"]
-
-### 📌 Vigtige noter
-[Special krav, loyalitetsstatus (Gold/Silver/Bronze), sentiment]
-
-Hotel kontekst: Munkebjerg Hotel - Luksushotel i Danmark med roomservice, rengøring, bookingændringer, loyalitetsprogram
+📌 **Opmærksom på**
+[Vigtige detaljer, manglende info, eller special krav - max 2 linjer]
 
 Regler:
-- Skriv ALTID på dansk
-- Brug strukturen ovenfor i HVER besked
-- Hold svar under 250 ord
-- Vær konkret og handlingsorienteret
-- Prioritér gæstetilfredshed`;
+- ALTID på dansk
+- Max 150 ord TOTAL
+- Kort og konkret
+- Kun essensen`;
     
     // Event handlers (stored for cleanup)
     private _customEventHandler: ((event: Event) => void) | null = null;
@@ -541,7 +534,7 @@ Regler:
         // Auto-configure Azure Foundry
         this.configureAzureFoundry(
             "https://hoterlmunkbjergdemo.cognitiveservices.azure.com",
-            "Bgrk12N01obBxT9OdDuH6vnbLFZ5EPXulvwW4XEJ80BbSY98aEyIJQQJ99BKACfhMk5XJ3w3AAAAACOGWjpS",
+            "YOUR_API_KEY_HERE",
             "gpt-4o-mini"
         ).catch(err => console.error("[TranscriptViewer] Failed to configure Azure AI:", err));
         
@@ -655,8 +648,17 @@ Regler:
         this._aiChatMessagesContainer.className = "ai-chat-messages";
         this._aiChatContainer.appendChild(this._aiChatMessagesContainer);
         
-        // Add welcome message
-        this.addAIMessage("Hello! I'm your AI assistant. Ask me anything about the guest conversation or request suggestions.", "ai");
+        // Loading indicator
+        this._aiLoadingIndicator = document.createElement("div");
+        this._aiLoadingIndicator.className = "ai-loading-indicator";
+        this._aiLoadingIndicator.style.display = "none";
+        this._aiLoadingIndicator.innerHTML = `
+            <div class="loading-spinner"></div>
+            <span>Henter AI analyse...</span>
+        `;
+        this._aiChatMessagesContainer.appendChild(this._aiLoadingIndicator);
+        
+        // Don't add initial welcome message - it will be replaced immediately anyway
         
         // Input area
         const inputContainer = document.createElement("div");
@@ -947,20 +949,28 @@ Regler:
         
         // Clear AI conversation and get fresh analysis on new transcript message
         if (this._azureOpenAIEndpoint && this._transcriptUtterances.length > 0) {
-            // Clear previous AI messages
+            // Clear previous AI messages completely - show only latest analysis
             this._aiChatMessages = [];
             this._conversationHistory = [];
             this._aiChatMessagesContainer.innerHTML = "";
             
-            // Get fresh analysis
+            // Re-add loading indicator after clearing
+            this._aiChatMessagesContainer.appendChild(this._aiLoadingIndicator);
+            
+            // Show loading indicator
+            this.showAILoading(true);
+            
+            // Get fresh analysis with simplified prompt
             const transcriptJSON = this.getTranscriptJSON();
             const analysisPrompt = this.formatTranscriptForAgent(transcriptJSON);
-            this.sendToAzureOpenAI(analysisPrompt).then(response => {
+            this.sendToAzureOpenAI(analysisPrompt, true).then(response => {
+                this.showAILoading(false);
                 if (response && response.message) {
-                    // Proactive AI insights appear automatically
+                    // Show only the latest AI analysis
                     this.addAIMessage(response.message, "ai");
                 }
             }).catch(err => {
+                this.showAILoading(false);
                 console.error("[TranscriptViewer] Failed to send to Azure OpenAI:", err);
             });
         }
@@ -1031,13 +1041,16 @@ Regler:
      */
     private async handleAIChatSubmit(): Promise<void> {
         const message = this._aiChatInput.value.trim();
-        if (!message) return;
+        if (!message || this._isLoadingAI) return;
         
         // Add user message
         this.addAIMessage(message, "user");
         
         // Clear input
         this._aiChatInput.value = "";
+        
+        // Show loading
+        this.showAILoading(true);
         
         // Get current transcript context
         const transcriptContext = this.formatTranscriptForAgent(this.getTranscriptJSON());
@@ -1046,11 +1059,13 @@ Regler:
         // Send to Azure OpenAI
         if (this._azureOpenAIEndpoint) {
             const response = await this.sendToAzureOpenAI(fullMessage);
+            this.showAILoading(false);
             
             if (response && response.message) {
                 this.addAIMessage(response.message, "ai");
             }
         } else {
+            this.showAILoading(false);
             this.addAIMessage("Azure OpenAI not configured. Please check setup.", "ai");
         }
     }
@@ -1081,46 +1096,79 @@ Regler:
      * Parse markdown formatting in AI messages
      */
     private parseMarkdown(text: string): string {
-        // Bold: **text** or __text__
-        text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-        text = text.replace(/__(.+?)__/g, '<strong>$1</strong>');
+        // Escape HTML first to prevent injection, but preserve newlines
+        const escapeHtml = (str: string): string => {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        };
         
-        // Headers: ### text - just bold them, hide the ###
-        text = text.replace(/^###\s+(.+)$/gm, '<div style="margin: 12px 0 6px 0; font-weight: 600; font-size: 14px; color: var(--colorNeutralForeground1);">$1</div>');
-        text = text.replace(/^##\s+(.+)$/gm, '<div style="margin: 12px 0 6px 0; font-weight: 600; font-size: 14px; color: var(--colorNeutralForeground1);">$1</div>');
-        
-        // Bullet lists: - item or * item
-        text = text.replace(/^[\-\*]\s+(.+)$/gm, '<li style="margin-left: 20px; margin-bottom: 4px;">$1</li>');
-        
-        // Wrap consecutive <li> in <ul> - split by double newline to handle list groups
+        // Process line by line to handle structure
         const lines = text.split('\n');
-        let inList = false;
         const processed: string[] = [];
+        let inList = false;
         
         for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-            if (line.includes('<li')) {
-                if (!inList) {
-                    processed.push('<ul style="margin: 8px 0; padding-left: 0; list-style-position: inside;">');
-                    inList = true;
-                }
-                processed.push(line);
-            } else {
+            let line = lines[i];
+            
+            // Skip empty lines
+            if (!line.trim()) {
                 if (inList) {
                     processed.push('</ul>');
                     inList = false;
                 }
-                processed.push(line);
+                processed.push('<br>');
+                continue;
             }
+            
+            // Check for emoji headers (📋, 🎯, ✅, 💬, 📌, ❓)
+            const headerMatch = line.match(/^(📋|🎯|✅|💬|📌|❓)\s*\*\*(.+?)\*\*\s*$/);
+            if (headerMatch) {
+                if (inList) {
+                    processed.push('</ul>');
+                    inList = false;
+                }
+                processed.push(`<div class="ai-section-header">${headerMatch[1]} ${escapeHtml(headerMatch[2])}</div>`);
+                continue;
+            }
+            
+            // Check for bullet points (•, -, *)
+            const bulletMatch = line.match(/^[•\-\*]\s+(.+)$/);
+            if (bulletMatch) {
+                if (!inList) {
+                    processed.push('<ul class="ai-list">');
+                    inList = true;
+                }
+                let content = escapeHtml(bulletMatch[1]);
+                // Handle bold within list items
+                content = content.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+                processed.push(`<li>${content}</li>`);
+                continue;
+            }
+            
+            // Regular text
+            if (inList) {
+                processed.push('</ul>');
+                inList = false;
+            }
+            
+            // Escape and process inline formatting
+            line = escapeHtml(line);
+            
+            // Bold: **text**
+            line = line.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            
+            // Quoted text: "text"
+            line = line.replace(/&quot;([^&]+)&quot;/g, '<span class="ai-quote">&quot;$1&quot;</span>');
+            
+            processed.push(line + '<br>');
         }
-        if (inList) processed.push('</ul>');
         
-        text = processed.join('\n');
+        if (inList) {
+            processed.push('</ul>');
+        }
         
-        // Line breaks
-        text = text.replace(/\n/g, '<br>');
-        
-        return text;
+        return processed.join('');
     }
     
     /**
@@ -1492,8 +1540,10 @@ Regler:
     
     /**
      * Send message to Azure OpenAI Chat Completions
+     * @param userMessage The message to send
+     * @param isAutoAnalysis If true, don't add to conversation history (fresh analysis)
      */
-    private async sendToAzureOpenAI(userMessage: string): Promise<any> {
+    private async sendToAzureOpenAI(userMessage: string, isAutoAnalysis: boolean = false): Promise<any> {
         if (!this._azureOpenAIEndpoint || !this._azureOpenAIKey) {
             console.warn("[TranscriptViewer] Azure OpenAI not configured");
             this.addAIMessage("Azure AI not configured.", "ai");
@@ -1503,17 +1553,24 @@ Regler:
         try {
             console.log("[TranscriptViewer] Sending to Azure OpenAI:", userMessage);
             
-            // Add user message to history
-            this._conversationHistory.push({
-                role: "user",
-                content: userMessage
-            });
+            // Only add to conversation history if it's a manual user query
+            if (!isAutoAnalysis) {
+                this._conversationHistory.push({
+                    role: "user",
+                    content: userMessage
+                });
+            }
             
             // Build messages array with system prompt
-            const messages = [
-                { role: "system", content: this._systemPrompt },
-                ...this._conversationHistory
-            ];
+            const messages = isAutoAnalysis 
+                ? [
+                    { role: "system", content: this._systemPrompt },
+                    { role: "user", content: userMessage }
+                  ]
+                : [
+                    { role: "system", content: this._systemPrompt },
+                    ...this._conversationHistory
+                  ];
             
             const url = `${this._azureOpenAIEndpoint}/openai/deployments/${this._azureOpenAIDeployment}/chat/completions?api-version=2025-01-01-preview`;
             
@@ -1525,9 +1582,9 @@ Regler:
                 },
                 body: JSON.stringify({
                     messages: messages,
-                    max_tokens: 800,
-                    temperature: 0.7,
-                    top_p: 1
+                    max_tokens: 400, // Reduced from 800 for more concise responses
+                    temperature: 0.5, // Reduced from 0.7 for more focused responses
+                    top_p: 0.9 // Reduced from 1 for less variation
                 })
             });
             
@@ -1542,15 +1599,17 @@ Regler:
             if (result.choices && result.choices.length > 0) {
                 const assistantMessage = result.choices[0].message.content;
                 
-                // Add assistant response to history
-                this._conversationHistory.push({
-                    role: "assistant",
-                    content: assistantMessage
-                });
-                
-                // Keep history manageable (last 10 exchanges)
-                if (this._conversationHistory.length > 20) {
-                    this._conversationHistory = this._conversationHistory.slice(-20);
+                // Only add to history if it's a manual conversation
+                if (!isAutoAnalysis) {
+                    this._conversationHistory.push({
+                        role: "assistant",
+                        content: assistantMessage
+                    });
+                    
+                    // Keep history manageable (last 10 exchanges)
+                    if (this._conversationHistory.length > 20) {
+                        this._conversationHistory = this._conversationHistory.slice(-20);
+                    }
                 }
                 
                 return { message: assistantMessage };
@@ -1567,31 +1626,20 @@ Regler:
     }
     
     /**
-     * Format transcript JSON for the AI agent
+     * Format transcript JSON for the AI agent (simplified)
      */
     private formatTranscriptForAgent(transcriptJSON: any): string {
         const messages = transcriptJSON.Transcript.Messages || [];
-        const aiHistory = transcriptJSON.AIAssistant || [];
         
-        let formatted = `**Current Conversation**\n\n`;
+        let formatted = `Analyser denne samtale:\n\n`;
         
         if (messages.length > 0) {
-            formatted += `**Transcript:**\n`;
             messages.forEach((msg: any) => {
                 formatted += `${msg.Caller}: ${msg.Message}\n`;
             });
-            formatted += `\n`;
+        } else {
+            formatted += `[Ingen beskeder endnu]\n`;
         }
-        
-        if (aiHistory.length > 0) {
-            formatted += `**Previous AI Interactions:**\n`;
-            aiHistory.forEach((msg: any) => {
-                formatted += `${msg.Sender}: ${msg.Message}\n`;
-            });
-            formatted += `\n`;
-        }
-        
-        formatted += `\nPlease analyze this conversation and provide insights, suggestions, or answer any questions.`;
         
         return formatted;
     }
@@ -1611,6 +1659,28 @@ Regler:
         console.log(`[TranscriptViewer] Using deployment: ${this._azureOpenAIDeployment}`);
         
         this.showToast("AI Assistant connected");
+    }
+    
+    /**
+     * Show/hide AI loading indicator
+     */
+    private showAILoading(show: boolean): void {
+        this._isLoadingAI = show;
+        if (this._aiLoadingIndicator) {
+            this._aiLoadingIndicator.style.display = show ? "flex" : "none";
+            
+            // Scroll to bottom to show loading indicator
+            if (show) {
+                requestAnimationFrame(() => {
+                    this._aiChatMessagesContainer.scrollTop = this._aiChatMessagesContainer.scrollHeight;
+                });
+            }
+        }
+        
+        // Disable input while loading
+        if (this._aiChatInput) {
+            this._aiChatInput.disabled = show;
+        }
     }
     
     /**

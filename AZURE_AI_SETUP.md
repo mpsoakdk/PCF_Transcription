@@ -23,7 +23,7 @@ const control = /* your TranscriptViewer control instance */;
 // Configure with your Azure AI credentials
 await control.configureAzureFoundry(
   "https://hoterlmunkbjergdemo.services.ai.azure.com/api/projects/proj-default",
-  "Bgrk12N01obBxT9OdDuH6vnbLFZ5EPXulvwW4XEJ80BbSY98aEyIJQQJ99BKACfhMk5XJ3w3AAAAACOGWjpS",
+  "YOUR_API_KEY_HERE",
   "asst_cf8qNyBELXmSdDgVLG4dAcSj" // Optional: override agent ID
 );
 ```
