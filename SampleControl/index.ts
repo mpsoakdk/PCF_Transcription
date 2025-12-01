@@ -12,13 +12,14 @@ interface TranscriptUtterance {
 }
 
 /**
- * Interface for AI chat messages
+ * Interface for AI analysis boxes
  */
-interface AIChatMessage {
+interface AIAnalysisBox {
     id: string;
-    sender: "user" | "ai";
-    text: string;
-    timestamp: Date;
+    title: string;
+    content: string;
+    isLoading: boolean;
+    systemPrompt: string;
 }
 
 /**
@@ -120,11 +121,11 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
     private _statusMessage: HTMLDivElement;
     private _headerElement: HTMLDivElement;
     
-    // UI Elements - AI Chat (Column 2)
-    private _aiChatContainer: HTMLDivElement;
-    private _aiChatMessagesContainer: HTMLDivElement;
-    private _aiChatInput: HTMLInputElement;
-    private _aiLoadingIndicator: HTMLDivElement;
+    // UI Elements - AI Analysis (Column 2)
+    private _aiAnalysisContainer: HTMLDivElement;
+    private _analysisBoxes: Map<string, HTMLDivElement> = new Map();
+    private _analysisBoxContent: Map<string, HTMLDivElement> = new Map();
+    private _analysisBoxLoaders: Map<string, HTMLDivElement> = new Map();
     
     // UI Elements - Info Panel (Column 3)
     private _infoPanelContainer: HTMLDivElement;
@@ -138,9 +139,11 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
     private _isActive: boolean = false;
     private _processedArticles: Set<Element> = new Set();
     
-    // AI Chat State
-    private _aiChatMessages: AIChatMessage[] = [];
-    private _isLoadingAI: boolean = false;
+    // AI Analysis State
+    private _aiAnalysisData: Map<string, AIAnalysisBox> = new Map();
+    private _lastTranscriptUpdate: number = 0;
+    private _analysisDebounceTimer: number | null = null;
+    private _analysisDebounceMs: number = 2000; // Wait 2 seconds after last transcript update
     
     // Guest Info State (placeholder data)
     private _guestInfo = {
@@ -172,33 +175,43 @@ export class TranscriptViewer implements ComponentFramework.StandardControl<IInp
     private _azureOpenAIEndpoint: string | null = null;
     private _azureOpenAIKey: string | null = null;
     private _azureOpenAIDeployment: string = "gpt-4o-mini";
-    private _conversationHistory: Array<{role: string, content: string}> = [];
-    private _systemPrompt: string = `Du er AI-assistent til Munkebjerg Hotels kundeserviceteam. Analyser samtaler og giv korte, handlingsorienterede svar.
-
-VIGTIGT - Brug denne SIMPLE struktur:
-
-📋 **Oversigt**
-[1-2 sætninger om samtalen]
-
-🎯 **Gæstens behov**
-[Hvad ønsker gæsten - max 1 linje]
-
-✅ **Næste skridt**
-• [Handling 1]
-• [Handling 2]
-• [Handling 3]
-
-💬 **Foreslået svar**
-"[Kort svar til gæsten]"
-
-📌 **Opmærksom på**
-[Vigtige detaljer, manglende info, eller special krav - max 2 linjer]
+    
+    // System prompts for each analysis box
+    private _systemPrompts = {
+        oversigt: `Du er AI-assistent til Munkebjerg Hotel. Giv en kort oversigt af samtalen.
 
 Regler:
-- ALTID på dansk
-- Max 150 ord TOTAL
-- Kort og konkret
-- Kun essensen`;
+- Skriv 2-3 korte sætninger
+- Fokuser på hovedemnet i samtalen
+- På dansk
+- Max 50 ord`,
+
+        gaestensBehov: `Du er AI-assistent til Munkebjerg Hotel. Identificer gæstens primære behov.
+
+Regler:
+- Kort punktliste (max 3-4 punkter)
+- Vær specifik og konkret
+- På dansk
+- Max 40 ord`,
+
+        vaerOpmærksomPaa: `Du er AI-assistent til Munkebjerg Hotel. Identificer vigtige detaljer og advarsler.
+
+Regler:
+- Punktliste med vigtige noter
+- Manglende information
+- Special krav eller følsomme emner
+- På dansk
+- Max 50 ord`,
+
+        forslagetActions: `Du er AI-assistent til Munkebjerg Hotel. Foreslå konkrete handlinger.
+
+Regler:
+- Punktliste med 3-5 handlinger
+- Start hver med handling-ord (Tjek, Book, Send, etc.)
+- Prioriteret rækkefølge
+- På dansk
+- Max 60 ord`
+    };
     
     // Event handlers (stored for cleanup)
     private _customEventHandler: ((event: Event) => void) | null = null;
@@ -571,8 +584,8 @@ Regler:
         // === COLUMN 1: Transcript History ===
         this.createTranscriptColumn();
         
-        // === COLUMN 2: AI Chat ===
-        this.createAIChatColumn();
+        // === COLUMN 2: AI Analysis ===
+        this.createAIAnalysisColumn();
         
         // === COLUMN 3: Guest Info + Actions ===
         this.createInfoColumn();
@@ -613,11 +626,11 @@ Regler:
     }
     
     /**
-     * Create Column 2: AI Chat Interface
+     * Create Column 2: AI Analysis Boxes
      */
-    private createAIChatColumn(): void {
-        this._aiChatContainer = document.createElement("div");
-        this._aiChatContainer.className = "ai-chat-column";
+    private createAIAnalysisColumn(): void {
+        this._aiAnalysisContainer = document.createElement("div");
+        this._aiAnalysisContainer.className = "ai-analysis-column";
         
         // Header with toggle button
         const header = document.createElement("div");
@@ -628,7 +641,7 @@ Regler:
         
         const title = document.createElement("span");
         title.className = "header-title";
-        title.textContent = "🤖 AI Assistent";
+        title.textContent = "AI Analyse";
         header.appendChild(title);
         
         // Add toggle transcript button
@@ -641,49 +654,76 @@ Regler:
         this._toggleTranscriptButton.addEventListener("click", () => this.toggleTranscriptVisibility());
         header.appendChild(this._toggleTranscriptButton);
         
-        this._aiChatContainer.appendChild(header);
+        this._aiAnalysisContainer.appendChild(header);
         
-        // Chat messages area
-        this._aiChatMessagesContainer = document.createElement("div");
-        this._aiChatMessagesContainer.className = "ai-chat-messages";
-        this._aiChatContainer.appendChild(this._aiChatMessagesContainer);
+        // Grid container for 4 boxes
+        const gridContainer = document.createElement("div");
+        gridContainer.className = "ai-analysis-grid";
         
-        // Loading indicator
-        this._aiLoadingIndicator = document.createElement("div");
-        this._aiLoadingIndicator.className = "ai-loading-indicator";
-        this._aiLoadingIndicator.style.display = "none";
-        this._aiLoadingIndicator.innerHTML = `
-            <div class="loading-spinner"></div>
-            <span>Henter AI analyse...</span>
-        `;
-        this._aiChatMessagesContainer.appendChild(this._aiLoadingIndicator);
+        // Initialize the 4 analysis boxes
+        const boxes = [
+            { id: "oversigt", title: "Oversigt" },
+            { id: "gaestensBehov", title: "Gæstens behov" },
+            { id: "vaerOpmærksomPaa", title: "Vær opmærksom på" },
+            { id: "forslagetActions", title: "Foreslåede handlinger" }
+        ];
         
-        // Don't add initial welcome message - it will be replaced immediately anyway
-        
-        // Input area
-        const inputContainer = document.createElement("div");
-        inputContainer.className = "ai-chat-input-container";
-        
-        this._aiChatInput = document.createElement("input");
-        this._aiChatInput.type = "text";
-        this._aiChatInput.className = "ai-chat-input";
-        this._aiChatInput.placeholder = "Stil AI et spørgsmål om samtalen...";
-        this._aiChatInput.addEventListener("keypress", (e) => {
-            if (e.key === "Enter" && this._aiChatInput.value.trim()) {
-                this.handleAIChatSubmit();
-            }
+        boxes.forEach(boxConfig => {
+            const box = this.createAnalysisBox(boxConfig.id, boxConfig.title);
+            gridContainer.appendChild(box);
+            
+            // Initialize data
+            this._aiAnalysisData.set(boxConfig.id, {
+                id: boxConfig.id,
+                title: boxConfig.title,
+                content: "Venter på samtale...",
+                isLoading: false,
+                systemPrompt: this._systemPrompts[boxConfig.id as keyof typeof this._systemPrompts]
+            });
         });
         
-        const sendButton = document.createElement("button");
-        sendButton.className = "ai-chat-send-btn";
-        sendButton.textContent = "Send";
-        sendButton.addEventListener("click", () => this.handleAIChatSubmit());
+        this._aiAnalysisContainer.appendChild(gridContainer);
+        this._mainContainer.appendChild(this._aiAnalysisContainer);
+    }
+    
+    /**
+     * Create a single analysis box
+     */
+    private createAnalysisBox(id: string, title: string): HTMLDivElement {
+        const box = document.createElement("div");
+        box.className = "analysis-box";
+        box.setAttribute("data-box-id", id);
         
-        inputContainer.appendChild(this._aiChatInput);
-        inputContainer.appendChild(sendButton);
-        this._aiChatContainer.appendChild(inputContainer);
+        // Box header
+        const boxHeader = document.createElement("div");
+        boxHeader.className = "analysis-box-header";
         
-        this._mainContainer.appendChild(this._aiChatContainer);
+        const boxTitle = document.createElement("span");
+        boxTitle.className = "analysis-box-title";
+        boxTitle.textContent = title;
+        boxHeader.appendChild(boxTitle);
+        
+        // Small loading spinner (top-left)
+        const loader = document.createElement("div");
+        loader.className = "analysis-box-loader";
+        loader.style.display = "none";
+        loader.innerHTML = `<div class="mini-spinner"></div>`;
+        boxHeader.appendChild(loader);
+        this._analysisBoxLoaders.set(id, loader);
+        
+        box.appendChild(boxHeader);
+        
+        // Box content
+        const content = document.createElement("div");
+        content.className = "analysis-box-content";
+        content.textContent = "Venter på samtale...";
+        box.appendChild(content);
+        
+        // Store references
+        this._analysisBoxes.set(id, box);
+        this._analysisBoxContent.set(id, content);
+        
+        return box;
     }
     
     /**
@@ -947,32 +987,10 @@ Regler:
         // Auto-scroll to bottom
         this.scrollToBottom();
         
-        // Clear AI conversation and get fresh analysis on new transcript message
+        // Trigger AI analysis update (debounced)
         if (this._azureOpenAIEndpoint && this._transcriptUtterances.length > 0) {
-            // Clear previous AI messages completely - show only latest analysis
-            this._aiChatMessages = [];
-            this._conversationHistory = [];
-            this._aiChatMessagesContainer.innerHTML = "";
-            
-            // Re-add loading indicator after clearing
-            this._aiChatMessagesContainer.appendChild(this._aiLoadingIndicator);
-            
-            // Show loading indicator
-            this.showAILoading(true);
-            
-            // Get fresh analysis with simplified prompt
-            const transcriptJSON = this.getTranscriptJSON();
-            const analysisPrompt = this.formatTranscriptForAgent(transcriptJSON);
-            this.sendToAzureOpenAI(analysisPrompt, true).then(response => {
-                this.showAILoading(false);
-                if (response && response.message) {
-                    // Show only the latest AI analysis
-                    this.addAIMessage(response.message, "ai");
-                }
-            }).catch(err => {
-                this.showAILoading(false);
-                console.error("[TranscriptViewer] Failed to send to Azure OpenAI:", err);
-            });
+            this._lastTranscriptUpdate = Date.now();
+            this.scheduleAIAnalysisUpdate();
         }
     }
 
@@ -1037,59 +1055,100 @@ Regler:
     }
     
     /**
-     * Handle AI chat message submission
+     * Schedule AI analysis update with debouncing
      */
-    private async handleAIChatSubmit(): Promise<void> {
-        const message = this._aiChatInput.value.trim();
-        if (!message || this._isLoadingAI) return;
+    private scheduleAIAnalysisUpdate(): void {
+        // Clear existing timer
+        if (this._analysisDebounceTimer !== null) {
+            window.clearTimeout(this._analysisDebounceTimer);
+        }
         
-        // Add user message
-        this.addAIMessage(message, "user");
+        // Schedule new update
+        this._analysisDebounceTimer = window.setTimeout(() => {
+            this.updateAllAnalysisBoxes();
+        }, this._analysisDebounceMs);
+    }
+    
+    /**
+     * Update all 4 analysis boxes with fresh AI responses
+     */
+    private async updateAllAnalysisBoxes(): Promise<void> {
+        if (!this._azureOpenAIEndpoint || this._transcriptUtterances.length === 0) {
+            return;
+        }
         
-        // Clear input
-        this._aiChatInput.value = "";
+        const transcriptJSON = this.getTranscriptJSON();
+        const transcriptContext = this.formatTranscriptForAgent(transcriptJSON);
         
-        // Show loading
-        this.showAILoading(true);
+        // Update each box independently
+        const boxIds = ["oversigt", "gaestensBehov", "vaerOpmærksomPaa", "forslagetActions"];
         
-        // Get current transcript context
-        const transcriptContext = this.formatTranscriptForAgent(this.getTranscriptJSON());
-        const fullMessage = `${transcriptContext}\n\nUser Question: ${message}`;
-        
-        // Send to Azure OpenAI
-        if (this._azureOpenAIEndpoint) {
-            const response = await this.sendToAzureOpenAI(fullMessage);
-            this.showAILoading(false);
-            
-            if (response && response.message) {
-                this.addAIMessage(response.message, "ai");
-            }
-        } else {
-            this.showAILoading(false);
-            this.addAIMessage("Azure OpenAI not configured. Please check setup.", "ai");
+        for (const boxId of boxIds) {
+            this.updateAnalysisBox(boxId, transcriptContext);
         }
     }
     
     /**
-     * Add a message to the AI chat
+     * Update a single analysis box
      */
-    private addAIMessage(text: string, sender: "user" | "ai"): void {
-        const message: AIChatMessage = {
-            id: `ai-msg-${Date.now()}-${Math.random()}`,
-            sender: sender,
-            text: text,
-            timestamp: new Date()
-        };
+    private async updateAnalysisBox(boxId: string, transcriptContext: string): Promise<void> {
+        const boxData = this._aiAnalysisData.get(boxId);
+        if (!boxData) return;
         
-        this._aiChatMessages.push(message);
-        this.renderAIMessage(message);
+        // Show loading in top-left corner
+        const loader = this._analysisBoxLoaders.get(boxId);
+        if (loader) {
+            loader.style.display = "flex";
+        }
         
-        // Auto-scroll to bottom after DOM update
-        requestAnimationFrame(() => {
+        // Mark as loading
+        boxData.isLoading = true;
+        
+        try {
+            const response = await this.sendToAzureOpenAI(
+                transcriptContext,
+                boxData.systemPrompt,
+                boxId
+            );
+            
+            if (response && response.message) {
+                // Update content with fade transition
+                this.updateBoxContent(boxId, response.message);
+            }
+        } catch (err) {
+            console.error(`[TranscriptViewer] Failed to update ${boxId}:`, err);
+            this.updateBoxContent(boxId, "Fejl ved hentning af data");
+        } finally {
+            // Hide loading
+            if (loader) {
+                loader.style.display = "none";
+            }
+            boxData.isLoading = false;
+        }
+    }
+    
+    /**
+     * Update box content with fade transition
+     */
+    private updateBoxContent(boxId: string, newContent: string): void {
+        const contentElement = this._analysisBoxContent.get(boxId);
+        const boxData = this._aiAnalysisData.get(boxId);
+        
+        if (!contentElement || !boxData) return;
+        
+        // Fade out
+        contentElement.style.opacity = "0";
+        
+        // Wait for fade out, then update content and fade in
+        setTimeout(() => {
+            boxData.content = newContent;
+            contentElement.textContent = newContent;
+            
+            // Fade in
             setTimeout(() => {
-                this._aiChatMessagesContainer.scrollTop = this._aiChatMessagesContainer.scrollHeight;
-            }, 100);
-        });
+                contentElement.style.opacity = "1";
+            }, 50);
+        }, 200);
     }
     
     /**
@@ -1169,36 +1228,6 @@ Regler:
         }
         
         return processed.join('');
-    }
-    
-    /**
-     * Render an AI chat message
-     */
-    private renderAIMessage(message: AIChatMessage): void {
-        const messageElement = document.createElement("div");
-        messageElement.className = `ai-message ${message.sender}`;
-        
-        const timeString = message.timestamp.toLocaleTimeString([], { 
-            hour: '2-digit', 
-            minute: '2-digit'
-        });
-        
-        const senderLabel = message.sender === "user" ? "User" : "Agent";
-        
-        // Parse markdown for AI messages, escape HTML for user messages
-        const messageContent = message.sender === "ai" 
-            ? this.parseMarkdown(message.text)
-            : this.escapeHtml(message.text);
-        
-        messageElement.innerHTML = `
-            <div class="ai-message-header">
-                <span class="ai-sender">${senderLabel}:</span>
-            </div>
-            <div class="ai-message-content">${messageContent}</div>
-            <div class="ai-message-time">${timeString}</div>
-        `;
-        
-        this._aiChatMessagesContainer.appendChild(messageElement);
     }
     
     /**
@@ -1356,9 +1385,6 @@ Regler:
         
         const actionTitle = actionTitles[actionId] || actionId;
         this.showToast(`Action triggered: ${actionTitle}`);
-        
-        // Add to AI chat as user action
-        this.addAIMessage(`I want to: ${actionTitle}`, "user");
     }
     
     /**
@@ -1530,47 +1556,36 @@ Regler:
                     Timestamp: u.timestamp.toISOString()
                 }))
             },
-            AIAssistant: this._aiChatMessages.map(m => ({
-                Sender: m.sender === "user" ? "User" : "Agent",
-                Message: m.text,
-                Timestamp: m.timestamp.toISOString()
-            }))
+            AIAnalysis: {
+                Boxes: Array.from(this._aiAnalysisData.values()).map(box => ({
+                    Id: box.id,
+                    Title: box.title,
+                    Content: box.content
+                }))
+            }
         };
     }
     
     /**
      * Send message to Azure OpenAI Chat Completions
      * @param userMessage The message to send
-     * @param isAutoAnalysis If true, don't add to conversation history (fresh analysis)
+     * @param systemPrompt The system prompt to use (specific to each box)
+     * @param boxId The ID of the box requesting the analysis
      */
-    private async sendToAzureOpenAI(userMessage: string, isAutoAnalysis: boolean = false): Promise<any> {
+    private async sendToAzureOpenAI(userMessage: string, systemPrompt: string, boxId: string): Promise<any> {
         if (!this._azureOpenAIEndpoint || !this._azureOpenAIKey) {
             console.warn("[TranscriptViewer] Azure OpenAI not configured");
-            this.addAIMessage("Azure AI not configured.", "ai");
             return null;
         }
         
         try {
-            console.log("[TranscriptViewer] Sending to Azure OpenAI:", userMessage);
+            console.log(`[TranscriptViewer] Sending to Azure OpenAI for ${boxId}`);
             
-            // Only add to conversation history if it's a manual user query
-            if (!isAutoAnalysis) {
-                this._conversationHistory.push({
-                    role: "user",
-                    content: userMessage
-                });
-            }
-            
-            // Build messages array with system prompt
-            const messages = isAutoAnalysis 
-                ? [
-                    { role: "system", content: this._systemPrompt },
-                    { role: "user", content: userMessage }
-                  ]
-                : [
-                    { role: "system", content: this._systemPrompt },
-                    ...this._conversationHistory
-                  ];
+            // Build messages array with box-specific system prompt
+            const messages = [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: userMessage }
+            ];
             
             const url = `${this._azureOpenAIEndpoint}/openai/deployments/${this._azureOpenAIDeployment}/chat/completions?api-version=2025-01-01-preview`;
             
@@ -1582,9 +1597,9 @@ Regler:
                 },
                 body: JSON.stringify({
                     messages: messages,
-                    max_tokens: 400, // Reduced from 800 for more concise responses
-                    temperature: 0.5, // Reduced from 0.7 for more focused responses
-                    top_p: 0.9 // Reduced from 1 for less variation
+                    max_tokens: 150, // Shorter responses for individual boxes
+                    temperature: 0.5,
+                    top_p: 0.9
                 })
             });
             
@@ -1594,33 +1609,16 @@ Regler:
             }
             
             const result = await response.json();
-            console.log("[TranscriptViewer] Azure OpenAI response:", result);
+            console.log(`[TranscriptViewer] Azure OpenAI response for ${boxId}:`, result);
             
             if (result.choices && result.choices.length > 0) {
                 const assistantMessage = result.choices[0].message.content;
-                
-                // Only add to history if it's a manual conversation
-                if (!isAutoAnalysis) {
-                    this._conversationHistory.push({
-                        role: "assistant",
-                        content: assistantMessage
-                    });
-                    
-                    // Keep history manageable (last 10 exchanges)
-                    if (this._conversationHistory.length > 20) {
-                        this._conversationHistory = this._conversationHistory.slice(-20);
-                    }
-                }
-                
                 return { message: assistantMessage };
             }
             
-            return { message: "No response from AI" };
+            return { message: "Ingen respons fra AI" };
         } catch (error: any) {
-            console.error("[TranscriptViewer] Error calling Azure OpenAI:", error);
-            const errorMsg = error.message || error.toString();
-            this.addAIMessage(`Error: ${errorMsg.includes('401') ? 'Authentication failed - check API key' : errorMsg}`, "ai");
-            this.showToast("Error communicating with AI");
+            console.error(`[TranscriptViewer] Error calling Azure OpenAI for ${boxId}:`, error);
             return null;
         }
     }
@@ -1659,28 +1657,6 @@ Regler:
         console.log(`[TranscriptViewer] Using deployment: ${this._azureOpenAIDeployment}`);
         
         this.showToast("AI Assistant connected");
-    }
-    
-    /**
-     * Show/hide AI loading indicator
-     */
-    private showAILoading(show: boolean): void {
-        this._isLoadingAI = show;
-        if (this._aiLoadingIndicator) {
-            this._aiLoadingIndicator.style.display = show ? "flex" : "none";
-            
-            // Scroll to bottom to show loading indicator
-            if (show) {
-                requestAnimationFrame(() => {
-                    this._aiChatMessagesContainer.scrollTop = this._aiChatMessagesContainer.scrollHeight;
-                });
-            }
-        }
-        
-        // Disable input while loading
-        if (this._aiChatInput) {
-            this._aiChatInput.disabled = show;
-        }
     }
     
     /**
